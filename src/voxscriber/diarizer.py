@@ -127,10 +127,9 @@ class Diarizer:
             )
 
         # Load pipeline
-        # pyannote.audio 3.1 uses use_auth_token, not token
         self._pipeline = Pipeline.from_pretrained(
             self.MODEL_ID,
-            use_auth_token=self.hf_token,
+            token=self.hf_token,
         )
 
         # Move to appropriate device
