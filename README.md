@@ -13,7 +13,7 @@ Professional speaker diarization running 100% locally on Apple Silicon. Combines
 
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
-- FFmpeg (`brew install ffmpeg`)
+- FFmpeg 7 (`brew install ffmpeg@7 && brew link ffmpeg@7`)
 - [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
 
 ## Installation
@@ -93,6 +93,16 @@ voxscriber --help
 ## Performance
 
 ~0.1-0.15x RTF on Apple Silicon. A 20-minute recording processes in ~2-3 minutes.
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `Library not loaded: @rpath/libavutil` | Run `brew reinstall ffmpeg` |
+| `requires Python >= 3.10` | Use Python 3.10+: `python3.10 -m venv .venv` |
+| Installed wrong package | It's `voxscriber` (with 'r'), not `voxscribe` |
+| `HF_TOKEN required` | Accept terms at [pyannote model page](https://huggingface.co/pyannote/speaker-diarization-3.1) first |
+| `torchcodec` fails with FFmpeg 8 | Downgrade: `brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7` |
 
 ## Support
 

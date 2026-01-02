@@ -3,6 +3,9 @@
 
 import argparse
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,6 +14,54 @@ from dotenv import load_dotenv
 from .pipeline import DiarizationPipeline, PipelineConfig
 
 load_dotenv()
+
+
+def check_dependencies() -> list[str]:
+    """Check system dependencies and return list of errors."""
+    errors = []
+
+    # Check FFmpeg
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        errors.append(
+            "FFmpeg not found. Install with: brew install ffmpeg@7 && brew link ffmpeg@7"
+        )
+    else:
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-version"], capture_output=True, text=True
+            )
+            version_match = re.search(r"ffmpeg version (\d+)", result.stdout)
+            if version_match:
+                major_version = int(version_match.group(1))
+                if major_version > 7:
+                    errors.append(
+                        f"FFmpeg {major_version} detected, but version 7 is required.\n"
+                        "  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7"
+                    )
+                elif major_version < 4:
+                    errors.append(
+                        f"FFmpeg {major_version} is too old. Version 4-7 required.\n"
+                        "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
+                    )
+        except Exception:
+            pass  # If we can't check version, continue anyway
+
+    # Check torchcodec can load
+    try:
+        from torchcodec.decoders import AudioDecoder  # noqa: F401
+    except ImportError as e:
+        if "libavutil" in str(e) or "libtorchcodec" in str(e):
+            errors.append(
+                "torchcodec cannot load FFmpeg libraries.\n"
+                "  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7"
+            )
+        else:
+            errors.append(f"torchcodec import error: {e}")
+    except Exception:
+        pass  # Other errors will surface later
+
+    return errors
 
 
 def main():
@@ -50,6 +101,14 @@ Environment:
                         help="Print transcript to console")
 
     args = parser.parse_args()
+
+    # Check dependencies first
+    dep_errors = check_dependencies()
+    if dep_errors:
+        print("Error: Dependency check failed:\n", file=sys.stderr)
+        for err in dep_errors:
+            print(f"  • {err}\n", file=sys.stderr)
+        sys.exit(1)
 
     if not args.audio.exists():
         print(f"Error: File not found: {args.audio}", file=sys.stderr)
