@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+
+# Audio files (user data)
+*.m4a
+*.wav
+*.mp3
+*.flac
+*.aac
+
+# Generated transcripts
+*.srt
+*.vtt
+
+# Cache
+diarization_cache/
+
+# AI context management
+restore-context/
+
+# Claude configs
+.claude/settings.local.json

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voxscriber"
+version = "0.1.0"
+description = "Local speaker diarization for Apple Silicon using MLX Whisper and Pyannote"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Daniel Paredes" }
+]
+keywords = ["speaker-diarization", "transcription", "whisper", "pyannote", "mlx", "apple-silicon"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "mlx-whisper>=0.4.0",
+    "pyannote.audio>=3.1.0",
+    "pydub>=0.25.1",
+    "soundfile>=0.12.1",
+    "tqdm>=4.66.0",
+    "rich>=13.7.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+voxscriber = "voxscriber.cli:main"
+
+[project.urls]
+Repository = "https://github.com/dparedesi/voxscriber"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxscriber"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
