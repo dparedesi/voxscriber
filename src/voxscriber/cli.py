@@ -6,6 +6,10 @@ import os
 import sys
 from pathlib import Path
 
+# Apply macOS fixes before any other imports
+from .fix_path import setup_macos_environment
+setup_macos_environment()
+
 from dotenv import load_dotenv
 
 from .pipeline import DiarizationPipeline, PipelineConfig
