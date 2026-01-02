@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voxscriber"
-version = "0.1.6"
+version = "0.1.7"
 description = "Local speaker diarization for Apple Silicon using MLX Whisper and Pyannote"
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,7 @@ dependencies = [
     "pyannote.audio>=3.1.0,<4.0.0",
     "torch>=2.0.0,<2.9.0",
     "torchaudio>=2.0.0,<2.9.0",
+    "huggingface-hub<0.26.0",
     "pydub>=0.25.1",
     "soundfile>=0.12.1",
     "tqdm>=4.66.0",
