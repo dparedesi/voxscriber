@@ -26,6 +26,9 @@ venv/
 .env
 .env.local
 
+# Virtual environment
+.venv/
+
 # Audio files (user data)
 *.m4a
 *.wav
