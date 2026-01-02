@@ -42,6 +42,7 @@ diarization_cache/
 
 # AI context management
 restore-context/
+logs/
 
 # Claude configs
 .claude/settings.local.json
