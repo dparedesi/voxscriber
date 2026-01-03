@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voxscriber"
-version = "0.1.12"
+version = "0.1.13"
 description = "Local speaker diarization for Apple Silicon using MLX Whisper and Pyannote"
 readme = "README.md"
 license = "MIT"

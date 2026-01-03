@@ -117,7 +117,7 @@ def _run_hf_login() -> bool:
         print("  Starting Hugging Face login...")
         print("  (Your token will be saved securely to ~/.cache/huggingface/token)")
         print()
-        login()
+        login(add_to_git_credential=False)
         return True
     except ImportError:
         print("  Error: huggingface_hub not installed")
