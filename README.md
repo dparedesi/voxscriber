@@ -1,9 +1,11 @@
 # VoxScriber
 
 [![PyPI version](https://img.shields.io/pypi/v/voxscriber.svg)](https://pypi.org/project/voxscriber/)
+[![Downloads](https://pepy.tech/badge/voxscriber)](https://pepy.tech/project/voxscriber)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-yellow.svg)](https://buymeacoffee.com/dparedesi)
+
+<a href="https://buymeacoffee.com/dparedesi" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a>
 
 Professional speaker diarization running 100% locally on Apple Silicon. Combines [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) with [Pyannote 3.1](https://github.com/pyannote/pyannote-audio).
 
