@@ -7,11 +7,12 @@ speaker-attributed transcripts with word-level accuracy.
 This is the critical "glue" that makes professional diarization work.
 """
 
-from typing import List, Optional, Tuple
 import re
-from dataclasses import dataclass, field, asdict
-from .transcriber import TranscriptionResult, Segment, Word
-from .diarizer import DiarizationResult, SpeakerSegment
+from dataclasses import asdict, dataclass, field
+from typing import List, Optional, Tuple
+
+from .diarizer import DiarizationResult
+from .transcriber import TranscriptionResult, Word
 
 
 @dataclass

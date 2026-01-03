@@ -10,16 +10,16 @@ Orchestrates the complete speaker diarization workflow:
 
 import os
 import time
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional
 
+from .aligner import AlignedTranscript, Aligner
+from .diarizer import DiarizationResult, Diarizer
+from .formatters import OutputFormatter, TranscriptPrinter
 from .preprocessor import AudioPreprocessor
 from .transcriber import Transcriber, TranscriptionResult
-from .diarizer import Diarizer, DiarizationResult
-from .aligner import Aligner, AlignedTranscript
-from .formatters import OutputFormatter, TranscriptPrinter
 
 
 @dataclass

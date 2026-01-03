@@ -15,9 +15,9 @@ After initial download, all processing happens 100% locally.
 """
 
 import os
-from pathlib import Path
-from typing import Optional, List, Tuple
 from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
 
 
 @dataclass

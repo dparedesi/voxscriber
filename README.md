@@ -28,8 +28,28 @@ pipx install voxscriber
 
 ### Setup Hugging Face Token
 
+VoxScriber uses pyannote models which require a Hugging Face token.
+
+**Option 1: Interactive setup (recommended)**
+
 ```bash
-# Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+voxscriber-doctor
+```
+
+This will guide you through accepting the model terms and saving your token securely.
+
+**Option 2: Using huggingface-cli**
+
+```bash
+# First, accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+huggingface-cli login
+```
+
+Your token will be saved to `~/.cache/huggingface/token` and used automatically.
+
+**Option 3: Environment variable**
+
+```bash
 export HF_TOKEN=your_token_here
 ```
 
@@ -96,13 +116,44 @@ voxscriber --help
 
 ## Troubleshooting
 
+Run the diagnostic tool to check your setup:
+
+```bash
+voxscriber-doctor
+```
+
+This will check FFmpeg, torchcodec, and HF_TOKEN, and offer to fix common issues automatically.
+
+### FFmpeg & torchcodec Issues
+
+VoxScriber uses pyannote-audio which requires torchcodec, and torchcodec requires FFmpeg 4-7.
+
+**"FFmpeg 8 detected" or "torchcodec fails"**
+
+FFmpeg 8 is not yet supported. Install FFmpeg 7:
+
+```bash
+brew uninstall ffmpeg
+brew install ffmpeg@7 && brew link ffmpeg@7
+```
+
+**"Library not loaded: @rpath/libavutil" or "no LC_RPATH's found"**
+
+This happens because `ffmpeg@7` is "keg-only" - Homebrew doesn't symlink it automatically. Add to your `~/.zshrc`:
+
+```bash
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@7/lib:$DYLD_LIBRARY_PATH"
+```
+
+Then restart your terminal or run `source ~/.zshrc`.
+
+### Other Issues
+
 | Issue | Solution |
 |-------|----------|
-| `Library not loaded: @rpath/libavutil` | Run `brew reinstall ffmpeg` |
 | `requires Python >= 3.10` | Use Python 3.10+: `python3.10 -m venv .venv` |
 | Installed wrong package | It's `voxscriber` (with 'r'), not `voxscribe` |
-| `HF_TOKEN required` | Accept terms at [pyannote model page](https://huggingface.co/pyannote/speaker-diarization-3.1) first |
-| `torchcodec` fails with FFmpeg 8 | Downgrade: `brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7` |
+| `HF_TOKEN required` | Run `voxscriber-doctor` to set up authentication |
 
 ## Support
 

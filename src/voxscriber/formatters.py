@@ -11,6 +11,7 @@ Formats aligned transcripts into various output formats:
 import json
 from pathlib import Path
 from typing import Optional
+
 from .aligner import AlignedTranscript
 
 

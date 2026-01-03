@@ -5,11 +5,9 @@ Uses Apple's MLX-optimized Whisper for fast, accurate transcription
 with word-level timestamps on Apple Silicon.
 """
 
-import subprocess
-import json
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass, field, asdict
+from typing import List, Optional
 
 
 @dataclass

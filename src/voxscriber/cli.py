@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -15,51 +16,234 @@ from .pipeline import DiarizationPipeline, PipelineConfig
 
 load_dotenv()
 
+# FFmpeg library path for keg-only Homebrew installations
+FFMPEG7_LIB_PATH = "/opt/homebrew/opt/ffmpeg@7/lib"
 
-def check_dependencies() -> list[str]:
-    """Check system dependencies and return list of errors."""
-    errors = []
+# Pyannote model that requires acceptance of terms
+PYANNOTE_MODEL_URL = "https://huggingface.co/pyannote/speaker-diarization-3.1"
 
-    # Check FFmpeg
+
+def _get_hf_token(cli_token: Optional[str] = None) -> Optional[str]:
+    """
+    Get Hugging Face token from multiple sources in priority order.
+
+    Priority:
+    1. CLI argument (--hf-token)
+    2. Environment variable (HF_TOKEN)
+    3. huggingface_hub stored token (~/.cache/huggingface/token)
+
+    Returns:
+        Token string if found, None otherwise.
+    """
+    # 1. CLI argument takes highest priority
+    if cli_token:
+        return cli_token
+
+    # 2. Environment variable
+    env_token = os.environ.get("HF_TOKEN")
+    if env_token:
+        return env_token
+
+    # 3. huggingface_hub stored token
+    try:
+        from huggingface_hub import get_token
+        stored_token = get_token()
+        if stored_token:
+            return stored_token
+    except ImportError:
+        pass  # huggingface_hub not available
+    except Exception:
+        pass  # Any other error
+
+    return None
+
+
+def _get_hf_token_source(cli_token: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """
+    Get Hugging Face token and its source.
+
+    Returns:
+        Tuple of (token, source_description)
+    """
+    if cli_token:
+        return cli_token, "CLI argument (--hf-token)"
+
+    env_token = os.environ.get("HF_TOKEN")
+    if env_token:
+        return env_token, "environment variable (HF_TOKEN)"
+
+    try:
+        from huggingface_hub import get_token
+        stored_token = get_token()
+        if stored_token:
+            return stored_token, "huggingface-cli login (~/.cache/huggingface/token)"
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return None, "not found"
+
+
+def _validate_hf_token(token: str) -> Tuple[bool, str]:
+    """
+    Validate that an HF token is valid by calling the API.
+
+    Returns:
+        Tuple of (is_valid, username_or_error)
+    """
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        user_info = api.whoami(token=token)
+        return True, user_info.get("name", "unknown")
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "Invalid" in error_msg:
+            return False, "Token is invalid or expired"
+        return False, f"Could not validate: {error_msg[:100]}"
+
+
+def _run_hf_login() -> bool:
+    """
+    Run interactive Hugging Face login.
+
+    Returns:
+        True if login was successful, False otherwise.
+    """
+    try:
+        from huggingface_hub import login
+        print()
+        print("  Starting Hugging Face login...")
+        print("  (Your token will be saved securely to ~/.cache/huggingface/token)")
+        print()
+        login()
+        return True
+    except ImportError:
+        print("  Error: huggingface_hub not installed")
+        return False
+    except Exception as e:
+        print(f"  Login failed: {e}")
+        return False
+
+
+def _get_ffmpeg_info() -> Tuple[Optional[str], Optional[int]]:
+    """Get FFmpeg path and major version."""
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
-        errors.append(
-            "FFmpeg not found. Install with: brew install ffmpeg@7 && brew link ffmpeg@7"
-        )
-    else:
-        try:
-            result = subprocess.run(
-                ["ffmpeg", "-version"], capture_output=True, text=True
-            )
-            version_match = re.search(r"ffmpeg version (\d+)", result.stdout)
-            if version_match:
-                major_version = int(version_match.group(1))
-                if major_version > 7:
-                    errors.append(
-                        f"FFmpeg {major_version} detected, but version 7 is required.\n"
-                        "  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7"
-                    )
-                elif major_version < 4:
-                    errors.append(
-                        f"FFmpeg {major_version} is too old. Version 4-7 required.\n"
-                        "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
-                    )
-        except Exception:
-            pass  # If we can't check version, continue anyway
+        return None, None
 
-    # Check torchcodec can load
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"], capture_output=True, text=True
+        )
+        version_match = re.search(r"ffmpeg version (\d+)", result.stdout)
+        if version_match:
+            return ffmpeg_path, int(version_match.group(1))
+    except Exception:
+        pass
+
+    return ffmpeg_path, None
+
+
+def _check_torchcodec_native_lib() -> Tuple[bool, str]:
+    """
+    Check if torchcodec native library can load.
+
+    Returns:
+        Tuple of (success, error_message)
+    """
     try:
         from torchcodec.decoders import AudioDecoder  # noqa: F401
+        return True, ""
     except ImportError as e:
-        if "libavutil" in str(e) or "libtorchcodec" in str(e):
+        return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+def _is_ffmpeg7_keg_only() -> bool:
+    """Check if ffmpeg@7 is installed as keg-only (not symlinked)."""
+    return os.path.isdir(FFMPEG7_LIB_PATH)
+
+
+def _is_dyld_library_path_set() -> bool:
+    """Check if DYLD_LIBRARY_PATH includes ffmpeg@7 lib path."""
+    dyld_path = os.environ.get("DYLD_LIBRARY_PATH", "")
+    return FFMPEG7_LIB_PATH in dyld_path
+
+
+def check_dependencies() -> list[str]:
+    """
+    Check system dependencies and return list of errors.
+
+    Validates:
+    1. FFmpeg is installed and version is 4-7
+    2. torchcodec native library can load FFmpeg
+    3. DYLD_LIBRARY_PATH is set if using keg-only ffmpeg@7
+    """
+    errors = []
+
+    # Step 1: Check FFmpeg installation and version
+    ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
+
+    if not ffmpeg_path:
+        errors.append(
+            "FFmpeg not found.\n"
+            "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
+        )
+        return errors  # Can't proceed without FFmpeg
+
+    if ffmpeg_version is not None:
+        if ffmpeg_version > 7:
             errors.append(
-                "torchcodec cannot load FFmpeg libraries.\n"
+                f"FFmpeg {ffmpeg_version} detected, but version 4-7 is required.\n"
+                "  torchcodec (used by pyannote-audio) does not yet support FFmpeg 8.\n"
                 "  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7"
             )
+            return errors  # Wrong version, can't proceed
+        elif ffmpeg_version < 4:
+            errors.append(
+                f"FFmpeg {ffmpeg_version} is too old. Version 4-7 required.\n"
+                "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
+            )
+            return errors  # Wrong version, can't proceed
+
+    # Step 2: Check if torchcodec can load its native library
+    torchcodec_ok, torchcodec_error = _check_torchcodec_native_lib()
+
+    if torchcodec_ok:
+        return []  # All good!
+
+    # Step 3: torchcodec failed - diagnose the issue
+    is_library_path_error = any(x in torchcodec_error for x in [
+        "libavutil", "libtorchcodec", "Library not loaded", "no LC_RPATH"
+    ])
+
+    if is_library_path_error:
+        # Check if this is the keg-only ffmpeg@7 issue
+        if _is_ffmpeg7_keg_only() and not _is_dyld_library_path_set():
+            errors.append(
+                "torchcodec cannot find FFmpeg libraries.\n\n"
+                "  This happens because ffmpeg@7 is 'keg-only' - Homebrew doesn't\n"
+                "  symlink it to /opt/homebrew/lib automatically.\n\n"
+                "  Fix: Add this to your ~/.zshrc (or ~/.bashrc):\n\n"
+                f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"\n\n'
+                "  Then restart your terminal or run: source ~/.zshrc"
+            )
         else:
-            errors.append(f"torchcodec import error: {e}")
-    except Exception:
-        pass  # Other errors will surface later
+            # Generic library loading error
+            errors.append(
+                "torchcodec cannot load FFmpeg libraries.\n\n"
+                "  Possible fixes:\n"
+                "  1. Reinstall FFmpeg: brew reinstall ffmpeg@7\n"
+                "  2. Ensure FFmpeg 7 is linked: brew link ffmpeg@7\n"
+                "  3. If using ffmpeg@7, add to ~/.zshrc:\n"
+                f'     export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"'
+            )
+    else:
+        # Some other torchcodec import error
+        errors.append(f"torchcodec import error: {torchcodec_error}")
 
     return errors
 
@@ -114,14 +298,22 @@ Environment:
         print(f"Error: File not found: {args.audio}", file=sys.stderr)
         sys.exit(1)
 
-    hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+    # Get HF token from multiple sources
+    hf_token = _get_hf_token(args.hf_token)
     if not hf_token:
         print("""
 Error: Hugging Face token required.
 
-1. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
-2. Get token at https://huggingface.co/settings/tokens
-3. export HF_TOKEN=your_token_here
+VoxScriber needs a Hugging Face token to download pyannote models.
+
+Quick setup (recommended):
+    voxscriber-doctor
+
+Manual setup:
+    1. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+    2. Get token at https://huggingface.co/settings/tokens
+    3. Run: huggingface-cli login
+       (or set HF_TOKEN environment variable)
 """, file=sys.stderr)
         sys.exit(1)
 
@@ -159,6 +351,202 @@ Error: Hugging Face token required.
             import traceback
             traceback.print_exc()
         sys.exit(1)
+
+
+def _get_shell_config_file() -> Optional[Path]:
+    """Detect the user's shell and return the appropriate config file."""
+    shell = os.environ.get("SHELL", "")
+    home = Path.home()
+
+    if "zsh" in shell:
+        return home / ".zshrc"
+    elif "bash" in shell:
+        # On macOS, .bash_profile is used for login shells
+        bash_profile = home / ".bash_profile"
+        bashrc = home / ".bashrc"
+        if bash_profile.exists():
+            return bash_profile
+        return bashrc
+    return None
+
+
+def _check_shell_config_has_dyld_path(config_file: Path) -> bool:
+    """Check if the shell config already has the ffmpeg@7 DYLD_LIBRARY_PATH export."""
+    if not config_file.exists():
+        return False
+    content = config_file.read_text()
+    # Check specifically for the ffmpeg@7 lib path in a DYLD_LIBRARY_PATH export
+    # This handles variations like:
+    #   export DYLD_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@7/lib:$DYLD_LIBRARY_PATH"
+    #   export DYLD_LIBRARY_PATH='/opt/homebrew/opt/ffmpeg@7/lib:...'
+    return FFMPEG7_LIB_PATH in content
+
+
+def doctor():
+    """
+    Interactive diagnostic and setup tool for VoxScriber.
+
+    Checks system dependencies and offers to fix common issues.
+    """
+    print("VoxScriber Doctor")
+    print("=" * 40)
+    print()
+
+    all_ok = True
+
+    # Check 1: FFmpeg
+    print("Checking FFmpeg...", end=" ")
+    ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
+
+    if not ffmpeg_path:
+        print("NOT FOUND")
+        print("  FFmpeg is not installed.")
+        print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        all_ok = False
+    elif ffmpeg_version is None:
+        print("UNKNOWN VERSION")
+        print(f"  FFmpeg found at {ffmpeg_path} but couldn't determine version.")
+        all_ok = False
+    elif ffmpeg_version > 7:
+        print(f"VERSION {ffmpeg_version} (unsupported)")
+        print("  torchcodec requires FFmpeg 4-7. Version 8 is not yet supported.")
+        print("  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7")
+        all_ok = False
+    elif ffmpeg_version < 4:
+        print(f"VERSION {ffmpeg_version} (too old)")
+        print("  torchcodec requires FFmpeg 4-7.")
+        print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        all_ok = False
+    else:
+        print(f"OK (version {ffmpeg_version})")
+
+    # Check 2: torchcodec native library
+    print("Checking torchcodec...", end=" ")
+    torchcodec_ok, torchcodec_error = _check_torchcodec_native_lib()
+
+    if torchcodec_ok:
+        print("OK")
+    else:
+        print("FAILED")
+        all_ok = False
+
+        # Diagnose the issue
+        is_library_path_error = any(x in torchcodec_error for x in [
+            "libavutil", "libtorchcodec", "Library not loaded", "no LC_RPATH"
+        ])
+
+        if is_library_path_error and _is_ffmpeg7_keg_only():
+            print()
+            print("  torchcodec cannot find FFmpeg libraries.")
+            print("  This is because ffmpeg@7 is 'keg-only' - Homebrew doesn't")
+            print("  symlink it to /opt/homebrew/lib automatically.")
+            print()
+
+            # Check if we can offer to fix it
+            shell_config = _get_shell_config_file()
+            if shell_config:
+                if _check_shell_config_has_dyld_path(shell_config):
+                    print(f"  Your {shell_config.name} already has the DYLD_LIBRARY_PATH export.")
+                    print("  Try restarting your terminal or running:")
+                    print(f"    source {shell_config}")
+                else:
+                    print(f"  Would you like to add the fix to {shell_config}?")
+                    print()
+                    print("  This will append the following line:")
+                    print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
+                    print()
+
+                    try:
+                        response = input("  Add to shell config? [y/N]: ").strip().lower()
+                        if response == "y":
+                            export_line = (
+                                f'\n# Added by voxscriber doctor for ffmpeg@7 support\n'
+                                f'export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"\n'
+                            )
+                            with open(shell_config, "a") as f:
+                                f.write(export_line)
+                            print()
+                            print(f"  Added to {shell_config}!")
+                            print()
+                            print("  To apply the changes, run:")
+                            print(f"    source {shell_config}")
+                            print()
+                            print("  Or restart your terminal.")
+                        else:
+                            print()
+                            print("  Skipped. To fix manually, add this to your shell config:")
+                            print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
+                    except (EOFError, KeyboardInterrupt):
+                        print("\n  Cancelled.")
+            else:
+                print("  Could not detect your shell config file.")
+                print("  Add this to your shell config (~/.zshrc or ~/.bashrc):")
+                print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
+        else:
+            print(f"  Error: {torchcodec_error[:200]}")
+
+    # Check 3: HF Token
+    print("Checking Hugging Face token...", end=" ")
+    token, source = _get_hf_token_source()
+
+    if token:
+        # Mask the token for display
+        masked = token[:8] + "..." if len(token) > 8 else "***"
+        print(f"FOUND ({masked})")
+        print(f"  Source: {source}")
+
+        # Optionally validate the token
+        print("  Validating token...", end=" ")
+        is_valid, result = _validate_hf_token(token)
+        if is_valid:
+            print(f"OK (logged in as: {result})")
+        else:
+            print("FAILED")
+            print(f"  {result}")
+            all_ok = False
+    else:
+        print("NOT FOUND")
+        all_ok = False
+        print()
+        print("  Hugging Face token is required for pyannote speaker diarization models.")
+        print()
+        print("  Before logging in, you must accept the model terms at:")
+        print(f"    {PYANNOTE_MODEL_URL}")
+        print()
+
+        try:
+            response = input("  Would you like to log in now? [y/N]: ").strip().lower()
+            if response == "y":
+                if _run_hf_login():
+                    # Re-check if login was successful
+                    new_token = _get_hf_token()
+                    if new_token:
+                        print()
+                        print("  Login successful! Token saved.")
+                        is_valid, result = _validate_hf_token(new_token)
+                        if is_valid:
+                            print(f"  Logged in as: {result}")
+                            all_ok = True  # This check now passes
+                    else:
+                        print("  Login may have failed. Please try again.")
+            else:
+                print()
+                print("  To set up authentication manually:")
+                print(f"    1. Accept terms at: {PYANNOTE_MODEL_URL}")
+                print("    2. Get token at: https://huggingface.co/settings/tokens")
+                print("    3. Run: huggingface-cli login")
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Cancelled.")
+
+    # Summary
+    print()
+    print("=" * 40)
+    if all_ok:
+        print("All checks passed! VoxScriber is ready to use.")
+    else:
+        print("Some issues were found. Please fix them and run 'voxscriber-doctor' again.")
+
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":

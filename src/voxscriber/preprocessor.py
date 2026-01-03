@@ -7,11 +7,11 @@ Handles audio conversion to the format required by diarization models:
 - WAV format (PCM 16-bit)
 """
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
-import os
 
 
 class AudioPreprocessor:
