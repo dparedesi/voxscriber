@@ -252,15 +252,27 @@ def main():
     parser = argparse.ArgumentParser(
         description="VoxScriber - Speaker diarization with MLX Whisper + Pyannote",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
-    voxscriber meeting.m4a
-    voxscriber meeting.m4a --speakers 2
-    voxscriber meeting.m4a --formats md,txt,json
+  voxscriber meeting.m4a                    # Basic usage
+  voxscriber meeting.m4a --speakers 2       # Known speaker count
+  voxscriber meeting.m4a --formats md,json  # Multiple output formats
 
-Environment:
-    HF_TOKEN    Hugging Face token for pyannote models (required)
-        """
+Output Formats:
+  md    Markdown with bold speaker names
+  txt   Timestamped plain text
+  json  Structured data with word-level timestamps
+  srt   SubRip subtitles
+  vtt   WebVTT subtitles
+
+First-Time Setup:
+  1. Accept model terms at: {PYANNOTE_MODEL_URL}
+  2. Run: voxscriber-doctor   (interactive setup wizard)
+     Or manually: huggingface-cli login
+
+Troubleshooting:
+  Run 'voxscriber-doctor' to diagnose and fix common issues.
+"""
     )
 
     parser.add_argument("audio", type=Path, help="Path to audio file")
