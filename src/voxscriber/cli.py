@@ -277,8 +277,8 @@ Troubleshooting:
 
     parser.add_argument("audio", type=Path, help="Path to audio file")
     parser.add_argument("--output", "-o", type=Path, help="Output directory")
-    parser.add_argument("--formats", "-f", type=str, default="md,txt",
-                        help="Output formats: md,txt,json,srt,vtt (default: md,txt)")
+    parser.add_argument("--formats", "-f", type=str, default="md",
+                        help="Output formats: md,txt,json,srt,vtt (default: md)")
     parser.add_argument("--model", "-m", type=str, default="large-v3-turbo",
                         choices=["tiny", "base", "small", "medium", "large",
                                  "large-v3-turbo", "large-4bit", "large-8bit"],

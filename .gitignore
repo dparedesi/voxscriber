@@ -49,3 +49,4 @@ logs/
 
 # Claude configs
 .claude/settings.local.json
+.context/
