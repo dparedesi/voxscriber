@@ -2,6 +2,7 @@
 """VoxScriber CLI - Speaker diarization for Apple Silicon."""
 
 import argparse
+import importlib.metadata
 import os
 import re
 import shutil
@@ -295,6 +296,11 @@ Troubleshooting:
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--print", action="store_true", dest="print_result",
                         help="Print transcript to console")
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"%(prog)s {importlib.metadata.version('voxscriber')}"
+    )
 
     args = parser.parse_args()
 
@@ -313,7 +319,39 @@ Troubleshooting:
     # Get HF token from multiple sources
     hf_token = _get_hf_token(args.hf_token)
     if not hf_token:
-        print("""
+        # Check if running in interactive terminal
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            print("\nNo Hugging Face token found.", file=sys.stderr)
+            print("VoxScriber needs this to download speaker diarization models.\n")
+            try:
+                response = input("Run setup wizard (voxscriber-doctor)? [Y/n]: ").strip().lower()
+                if response in ("", "y", "yes"):
+                    print()
+                    result = doctor()
+                    if result == 0:
+                        # Doctor succeeded, retry getting token
+                        hf_token = _get_hf_token()
+                        if hf_token:
+                            print("\nSetup complete! Continuing with transcription...\n")
+                        else:
+                            print("\nSetup incomplete. Please run 'voxscriber-doctor' again.")
+                            sys.exit(1)
+                    else:
+                        sys.exit(1)
+                else:
+                    # User declined, show manual instructions
+                    print("""
+To set up manually:
+  1. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+  2. Run: huggingface-cli login
+""")
+                    sys.exit(1)
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                sys.exit(130)
+        else:
+            # Non-interactive: show full error message
+            print("""
 Error: Hugging Face token required.
 
 VoxScriber needs a Hugging Face token to download pyannote models.
@@ -327,7 +365,7 @@ Manual setup:
     3. Run: huggingface-cli login
        (or set HF_TOKEN environment variable)
 """, file=sys.stderr)
-        sys.exit(1)
+            sys.exit(1)
 
     config = PipelineConfig(
         whisper_model=args.model,
