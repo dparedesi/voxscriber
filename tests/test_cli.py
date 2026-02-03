@@ -580,4 +580,141 @@ def test_doctor_fix_cancelled(mock_input, mock_validate, mock_get_token, mock_ch
     assert cli.doctor() == 1
 
 
+# --- Tests for Batch Processing ---
+
+def test_find_audio_files(tmp_path):
+    """Test finding audio files in a directory."""
+    # Create test files
+    (tmp_path / "meeting.m4a").touch()
+    (tmp_path / "recording.mp3").touch()
+    (tmp_path / "audio.wav").touch()
+    (tmp_path / "readme.txt").touch()
+    (tmp_path / "notes.md").touch()
+
+    files = cli._find_audio_files(tmp_path)
+
+    # Should find 3 audio files, sorted alphabetically
+    assert len(files) == 3
+    assert files[0].name == "audio.wav"
+    assert files[1].name == "meeting.m4a"
+    assert files[2].name == "recording.mp3"
+
+
+def test_find_audio_files_empty(tmp_path):
+    """Test finding audio files in empty directory."""
+    files = cli._find_audio_files(tmp_path)
+    assert files == []
+
+
+def test_find_audio_files_all_extensions(tmp_path):
+    """Test all supported audio extensions."""
+    for ext in cli.AUDIO_EXTENSIONS:
+        (tmp_path / f"file{ext}").touch()
+
+    files = cli._find_audio_files(tmp_path)
+    assert len(files) == len(cli.AUDIO_EXTENSIONS)
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_batch_processing(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
+    """Test batch processing of a folder."""
+    # Create test audio files
+    (tmp_path / "call1.m4a").touch()
+    (tmp_path / "call2.mp3").touch()
+
+    mock_pipeline = mock_pipeline_cls.return_value
+    mock_pipeline.process.return_value = "transcript"
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+
+    # Pipeline should be created and called twice
+    assert mock_pipeline.process.call_count == 2
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_batch_1to1_detection(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
+    """Test 1to1 detection sets speakers=2."""
+    # Create file with 1to1 in the name
+    (tmp_path / "meeting_1to1_john.m4a").touch()
+    (tmp_path / "group_call.m4a").touch()
+
+    mock_pipeline = mock_pipeline_cls.return_value
+    mock_pipeline.process.return_value = "transcript"
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+
+    # Check configs passed to pipeline
+    calls = mock_pipeline_cls.call_args_list
+    assert len(calls) == 2
+
+    # First file (group_call) - no speakers specified
+    config1 = calls[0][0][0]
+    assert config1.num_speakers is None
+
+    # Second file (1to1) - speakers=2
+    config2 = calls[1][0][0]
+    assert config2.num_speakers == 2
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_batch_explicit_speakers_overrides(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
+    """Test explicit --speakers flag overrides 1to1 detection."""
+    (tmp_path / "meeting_1to1.m4a").touch()
+
+    mock_pipeline = mock_pipeline_cls.return_value
+    mock_pipeline.process.return_value = "transcript"
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path), "--speakers", "5"]):
+        cli.main()
+
+    config = mock_pipeline_cls.call_args[0][0]
+    assert config.num_speakers == 5  # Explicit flag wins
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+def test_main_batch_empty_folder(mock_check_deps, tmp_path):
+    """Test batch processing fails on empty folder."""
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 1
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_batch_partial_failure(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path, capsys):
+    """Test batch continues after individual file failures."""
+    (tmp_path / "good.m4a").touch()
+    (tmp_path / "bad.m4a").touch()
+    (tmp_path / "also_good.m4a").touch()
+
+    mock_pipeline = mock_pipeline_cls.return_value
+
+    # First and third succeed, second fails
+    mock_pipeline.process.side_effect = [
+        "transcript1",
+        Exception("Processing failed"),
+        "transcript3",
+    ]
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+
+    # Should have tried all 3 files
+    assert mock_pipeline.process.call_count == 3
+
+    captured = capsys.readouterr()
+    assert "Error processing bad.m4a" in captured.err
+    assert "2/3 files processed" in captured.out
+
+
 

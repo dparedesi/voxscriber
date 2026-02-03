@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -22,6 +22,26 @@ FFMPEG7_LIB_PATH = "/opt/homebrew/opt/ffmpeg@7/lib"
 
 # Pyannote model that requires acceptance of terms
 PYANNOTE_MODEL_URL = "https://huggingface.co/pyannote/speaker-diarization-3.1"
+
+# Supported audio file extensions (formats ffmpeg can handle)
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".flac", ".ogg", ".opus", ".aac", ".wma", ".webm"}
+
+
+def _find_audio_files(directory: Path) -> List[Path]:
+    """
+    Find all audio files in a directory (non-recursive).
+
+    Args:
+        directory: Directory to search
+
+    Returns:
+        List of audio file paths, sorted alphabetically
+    """
+    audio_files = []
+    for file in directory.iterdir():
+        if file.is_file() and file.suffix.lower() in AUDIO_EXTENSIONS:
+            audio_files.append(file)
+    return sorted(audio_files)
 
 
 def _get_hf_token(cli_token: Optional[str] = None) -> Optional[str]:
@@ -258,6 +278,7 @@ Examples:
   voxscriber meeting.m4a                    # Basic usage
   voxscriber meeting.m4a --speakers 2       # Known speaker count
   voxscriber meeting.m4a --formats md,json  # Multiple output formats
+  voxscriber ./recordings/                  # Batch process a folder
 
 Output Formats:
   md    Markdown with bold speaker names
@@ -276,7 +297,7 @@ Troubleshooting:
 """
     )
 
-    parser.add_argument("audio", type=Path, help="Path to audio file")
+    parser.add_argument("audio", type=Path, help="Path to audio file or folder")
     parser.add_argument("--output", "-o", type=Path, help="Output directory")
     parser.add_argument("--formats", "-f", type=str, default="md",
                         help="Output formats: md,txt,json,srt,vtt (default: md)")
@@ -313,8 +334,19 @@ Troubleshooting:
         sys.exit(1)
 
     if not args.audio.exists():
-        print(f"Error: File not found: {args.audio}", file=sys.stderr)
+        print(f"Error: Path not found: {args.audio}", file=sys.stderr)
         sys.exit(1)
+
+    # Determine if processing single file or batch
+    is_batch = args.audio.is_dir()
+    if is_batch:
+        audio_files = _find_audio_files(args.audio)
+        if not audio_files:
+            print(f"Error: No audio files found in {args.audio}", file=sys.stderr)
+            print(f"  Supported formats: {', '.join(sorted(AUDIO_EXTENSIONS))}")
+            sys.exit(1)
+    else:
+        audio_files = [args.audio]
 
     # Get HF token from multiple sources
     hf_token = _get_hf_token(args.hf_token)
@@ -367,40 +399,68 @@ Manual setup:
 """, file=sys.stderr)
             sys.exit(1)
 
-    config = PipelineConfig(
-        whisper_model=args.model,
-        language=args.language,
-        hf_token=hf_token,
-        num_speakers=args.speakers,
-        min_speakers=args.min_speakers,
-        max_speakers=args.max_speakers,
-        device=args.device,
-        parallel=not args.sequential,
-        verbose=not args.quiet,
-    )
+    # Process files
+    total_files = len(audio_files)
+    failed_files = []
 
-    pipeline = DiarizationPipeline(config)
+    for idx, audio_file in enumerate(audio_files, 1):
+        # Determine number of speakers for this file
+        # If filename contains "1to1", it's a two-person conversation
+        file_speakers = args.speakers
+        if file_speakers is None and "1to1" in audio_file.stem.lower():
+            file_speakers = 2
 
-    try:
-        transcript = pipeline.process(
-            audio_path=args.audio,
-            output_dir=args.output,
-            output_formats=[f.strip() for f in args.formats.split(",")],
+        if is_batch and not args.quiet:
+            print(f"\n[{idx}/{total_files}] Processing: {audio_file.name}")
+            if file_speakers == 2 and args.speakers is None:
+                print("  (detected 1to1 in filename, setting speakers=2)")
+
+        config = PipelineConfig(
+            whisper_model=args.model,
+            language=args.language,
+            hf_token=hf_token,
+            num_speakers=file_speakers,
+            min_speakers=args.min_speakers,
+            max_speakers=args.max_speakers,
+            device=args.device,
+            parallel=not args.sequential,
+            verbose=not args.quiet,
         )
 
-        if args.print_result:
-            print("\n" + "=" * 60 + "\n")
-            pipeline.print_transcript(transcript)
+        pipeline = DiarizationPipeline(config)
 
-    except KeyboardInterrupt:
-        print("\nInterrupted", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        if not args.quiet:
-            import traceback
-            traceback.print_exc()
-        sys.exit(1)
+        try:
+            transcript = pipeline.process(
+                audio_path=audio_file,
+                output_dir=args.output,
+                output_formats=[f.strip() for f in args.formats.split(",")],
+            )
+
+            if args.print_result:
+                print("\n" + "=" * 60 + "\n")
+                pipeline.print_transcript(transcript)
+
+        except KeyboardInterrupt:
+            print("\nInterrupted", file=sys.stderr)
+            sys.exit(130)
+        except Exception as e:
+            if is_batch:
+                failed_files.append((audio_file, str(e)))
+                print(f"Error processing {audio_file.name}: {e}", file=sys.stderr)
+            else:
+                print(f"Error: {e}", file=sys.stderr)
+                if not args.quiet:
+                    import traceback
+                    traceback.print_exc()
+                sys.exit(1)
+
+    # Summary for batch processing
+    if is_batch and not args.quiet:
+        print(f"\nBatch complete: {total_files - len(failed_files)}/{total_files} files processed")
+        if failed_files:
+            print("Failed files:")
+            for f, err in failed_files:
+                print(f"  - {f.name}: {err}")
 
 
 def _get_shell_config_file() -> Optional[Path]:
