@@ -42,6 +42,8 @@ class PipelineConfig:
 
     # Output settings
     speaker_names: Optional[Dict[str, str]] = None
+    subtitle_mode: str = "speaker"
+    subtitle_max_duration: Optional[float] = None
 
     # Processing
     parallel: bool = True
@@ -154,7 +156,15 @@ class DiarizationPipeline:
         base_name = audio_path.stem
         for fmt in output_formats:
             output_path = output_dir / f"{base_name}.{fmt}"
-            self.formatter.save(aligned, output_path)
+            if fmt in {"srt", "vtt"}:
+                self.formatter.save(
+                    aligned,
+                    output_path,
+                    mode=self.config.subtitle_mode,
+                    max_duration=self.config.subtitle_max_duration,
+                )
+            else:
+                self.formatter.save(aligned, output_path)
             self._log(f"Saved: {output_path}")
 
         total_time = time.time() - total_start

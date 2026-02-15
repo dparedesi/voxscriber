@@ -67,6 +67,9 @@ voxscriber meeting.m4a --speakers 2
 # All formats
 voxscriber meeting.m4a --formats md,txt,json,srt,vtt
 
+# Sentence-level subtitle segmentation for editing workflows
+voxscriber meeting.m4a --formats srt,vtt --srt-mode sentence --srt-max-duration 15
+
 # Print to console
 voxscriber meeting.m4a --print
 ```
@@ -108,6 +111,8 @@ voxscriber --help
   --formats, -f     Output formats (default: md,txt)
   --output, -o      Output directory
   --device          mps (default) or cpu
+  --srt-mode        Subtitle segmentation mode for srt/vtt: speaker|sentence
+  --srt-max-duration  Maximum subtitle duration in seconds for srt/vtt
   --quiet, -q       Suppress progress
   --print           Print transcript to console
 ```

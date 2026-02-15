@@ -105,18 +105,24 @@ def test_pipeline_config_defaults():
     assert config.device == "mps"
     assert config.language is None
     assert config.hf_token is None
+    assert config.subtitle_mode == "speaker"
+    assert config.subtitle_max_duration is None
 
 def test_pipeline_config_custom():
     config = PipelineConfig(
         whisper_model="tiny",
         num_speakers=2,
         parallel=False,
-        hf_token="test_token"
+        hf_token="test_token",
+        subtitle_mode="sentence",
+        subtitle_max_duration=15.0,
     )
     assert config.whisper_model == "tiny"
     assert config.num_speakers == 2
     assert config.parallel is False
     assert config.hf_token == "test_token"
+    assert config.subtitle_mode == "sentence"
+    assert config.subtitle_max_duration == 15.0
 
 # --- Tests for DiarizationPipeline Initialization ---
 
@@ -265,6 +271,42 @@ def test_process_outputs(mock_components, mock_transcription_result, mock_diariz
     calls = mock_components["formatter"].save.call_args_list
     extensions = [str(call.args[1]).split('.')[-1] for call in calls]
     assert set(extensions) == {"json", "srt", "vtt"}
+
+
+def test_process_passes_subtitle_options_for_srt_and_vtt_only(
+    mock_components,
+    mock_transcription_result,
+    mock_diarization_result,
+    mock_aligned_transcript,
+):
+    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
+    mock_components["diarizer"].diarize.return_value = mock_diarization_result
+    mock_components["aligner"].align.return_value = mock_aligned_transcript
+
+    pipeline = DiarizationPipeline(
+        PipelineConfig(
+            subtitle_mode="sentence",
+            subtitle_max_duration=15.0,
+        )
+    )
+
+    with patch("pathlib.Path.mkdir"):
+        pipeline.process(
+            Path("input/test.wav"),
+            output_dir=Path("output"),
+            output_formats=["json", "srt", "vtt", "txt"],
+        )
+
+    calls = mock_components["formatter"].save.call_args_list
+    assert len(calls) == 4
+
+    for call in calls:
+        ext = str(call.args[1]).split(".")[-1]
+        if ext in {"srt", "vtt"}:
+            assert call.kwargs["mode"] == "sentence"
+            assert call.kwargs["max_duration"] == 15.0
+        else:
+            assert call.kwargs == {}
 
 # --- Error Handling Tests ---
 

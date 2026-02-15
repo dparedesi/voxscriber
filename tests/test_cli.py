@@ -444,7 +444,9 @@ def test_main_arguments_mapping(mock_pipeline_cls, mock_get_token, mock_check_de
         "--max-speakers", "4",
         "--device", "cpu",
         "--sequential",
-        "--quiet"
+        "--quiet",
+        "--srt-mode", "sentence",
+        "--srt-max-duration", "15",
     ]
 
     with patch("pathlib.Path.exists", return_value=True):
@@ -461,6 +463,16 @@ def test_main_arguments_mapping(mock_pipeline_cls, mock_get_token, mock_check_de
     assert config.device == "cpu"
     assert config.parallel is False  # --sequential implies parallel=False
     assert config.verbose is False   # --quiet implies verbose=False
+    assert config.subtitle_mode == "sentence"
+    assert config.subtitle_max_duration == 15.0
+
+
+def test_main_invalid_srt_max_duration():
+    """Test --srt-max-duration validation."""
+    with patch("sys.argv", ["voxscriber", "test.m4a", "--srt-max-duration", "0"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
 @patch("voxscriber.cli._get_hf_token", return_value="token")
@@ -715,6 +727,5 @@ def test_main_batch_partial_failure(mock_pipeline_cls, mock_get_token, mock_chec
     captured = capsys.readouterr()
     assert "Error processing bad.m4a" in captured.err
     assert "2/3 files processed" in captured.out
-
 
 

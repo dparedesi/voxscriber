@@ -9,6 +9,7 @@ Formats aligned transcripts into various output formats:
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -56,6 +57,102 @@ class OutputFormatter:
     def _get_speaker_name(self, speaker_id: str) -> str:
         """Get display name for speaker."""
         return self.speaker_names.get(speaker_id, speaker_id)
+
+    _SENTENCE_END_RE = re.compile(r"[.!?…]+[\"')\]]*$")
+
+    def _is_sentence_end(self, text: str) -> bool:
+        """Return True if a word likely ends a sentence."""
+        return bool(self._SENTENCE_END_RE.search(text.strip()))
+
+    def _build_subtitle_chunks(
+        self,
+        transcript: AlignedTranscript,
+        mode: str = "speaker",
+        max_duration: Optional[float] = None,
+    ) -> list[tuple[str, float, float, str]]:
+        """
+        Build subtitle chunks from transcript segments.
+
+        Returns:
+            List of (speaker, start, end, text)
+        """
+        if mode not in {"speaker", "sentence"}:
+            raise ValueError(f"Unsupported subtitle mode: {mode}")
+        if max_duration is not None and max_duration <= 0:
+            raise ValueError("max_duration must be > 0")
+
+        chunks: list[tuple[str, float, float, str]] = []
+
+        for seg in transcript.segments:
+            speaker = self._get_speaker_name(seg.speaker)
+
+            # Backward-compatible path for original behavior.
+            if mode == "speaker" and max_duration is None:
+                text = seg.text.strip()
+                if text:
+                    chunks.append((speaker, seg.start, seg.end, text))
+                continue
+
+            # Fall back when word timings are unavailable.
+            if not seg.words:
+                text = seg.text.strip()
+                if text:
+                    chunks.append((speaker, seg.start, seg.end, text))
+                continue
+
+            current_words = []
+            current_start = None
+
+            for word in seg.words:
+                word_text = word.text.strip()
+                if not word_text:
+                    continue
+
+                if current_start is None:
+                    current_start = word.start
+
+                # Keep chunk duration capped when configured.
+                if (
+                    max_duration is not None
+                    and current_words
+                    and (word.end - current_start) > max_duration
+                ):
+                    chunk_text = " ".join(w.text for w in current_words).strip()
+                    if chunk_text:
+                        chunks.append((
+                            speaker,
+                            current_words[0].start,
+                            current_words[-1].end,
+                            chunk_text,
+                        ))
+                    current_words = []
+                    current_start = word.start
+
+                current_words.append(word)
+
+                if mode == "sentence" and self._is_sentence_end(word_text):
+                    chunk_text = " ".join(w.text for w in current_words).strip()
+                    if chunk_text:
+                        chunks.append((
+                            speaker,
+                            current_words[0].start,
+                            current_words[-1].end,
+                            chunk_text,
+                        ))
+                    current_words = []
+                    current_start = None
+
+            if current_words:
+                chunk_text = " ".join(w.text for w in current_words).strip()
+                if chunk_text:
+                    chunks.append((
+                        speaker,
+                        current_words[0].start,
+                        current_words[-1].end,
+                        chunk_text,
+                    ))
+
+        return chunks
 
     def to_json(
         self,
@@ -130,6 +227,8 @@ class OutputFormatter:
         transcript: AlignedTranscript,
         max_chars_per_line: int = 42,
         include_speaker: bool = True,
+        mode: str = "speaker",
+        max_duration: Optional[float] = None,
     ) -> str:
         """
         Format as SRT subtitles.
@@ -138,6 +237,8 @@ class OutputFormatter:
             transcript: Aligned transcript
             max_chars_per_line: Maximum characters per subtitle line
             include_speaker: Include speaker name in subtitle
+            mode: Subtitle segmentation mode ("speaker" or "sentence")
+            max_duration: Optional maximum subtitle duration in seconds
 
         Returns:
             SRT formatted string
@@ -145,9 +246,13 @@ class OutputFormatter:
         srt_entries = []
         index = 1
 
-        for seg in transcript.segments:
-            speaker = self._get_speaker_name(seg.speaker)
-            text = seg.text
+        chunks = self._build_subtitle_chunks(
+            transcript=transcript,
+            mode=mode,
+            max_duration=max_duration,
+        )
+
+        for speaker, start, end, text in chunks:
 
             # Add speaker prefix
             if include_speaker:
@@ -174,8 +279,8 @@ class OutputFormatter:
 
                 text = "\n".join(lines)
 
-            start_ts = format_timestamp_srt(seg.start)
-            end_ts = format_timestamp_srt(seg.end)
+            start_ts = format_timestamp_srt(start)
+            end_ts = format_timestamp_srt(end)
 
             srt_entries.append(f"{index}\n{start_ts} --> {end_ts}\n{text}\n")
             index += 1
@@ -186,6 +291,8 @@ class OutputFormatter:
         self,
         transcript: AlignedTranscript,
         include_speaker: bool = True,
+        mode: str = "speaker",
+        max_duration: Optional[float] = None,
     ) -> str:
         """
         Format as WebVTT subtitles.
@@ -193,21 +300,27 @@ class OutputFormatter:
         Args:
             transcript: Aligned transcript
             include_speaker: Include speaker name
+            mode: Subtitle segmentation mode ("speaker" or "sentence")
+            max_duration: Optional maximum subtitle duration in seconds
 
         Returns:
             VTT formatted string
         """
         lines = ["WEBVTT", ""]
 
-        for seg in transcript.segments:
-            speaker = self._get_speaker_name(seg.speaker)
-            text = seg.text
+        chunks = self._build_subtitle_chunks(
+            transcript=transcript,
+            mode=mode,
+            max_duration=max_duration,
+        )
+
+        for speaker, start, end, text in chunks:
 
             if include_speaker:
                 text = f"<v {speaker}>{text}"
 
-            start_ts = format_timestamp_vtt(seg.start)
-            end_ts = format_timestamp_vtt(seg.end)
+            start_ts = format_timestamp_vtt(start)
+            end_ts = format_timestamp_vtt(end)
 
             lines.append(f"{start_ts} --> {end_ts}")
             lines.append(text)

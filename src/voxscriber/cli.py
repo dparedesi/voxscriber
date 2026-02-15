@@ -317,6 +317,10 @@ Troubleshooting:
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--print", action="store_true", dest="print_result",
                         help="Print transcript to console")
+    parser.add_argument("--srt-mode", type=str, default="speaker", choices=["speaker", "sentence"],
+                        help="Subtitle segmentation mode for srt/vtt (default: speaker)")
+    parser.add_argument("--srt-max-duration", type=float,
+                        help="Maximum subtitle duration in seconds for srt/vtt (e.g., 15)")
     parser.add_argument(
         "--version", "-V",
         action="version",
@@ -324,6 +328,9 @@ Troubleshooting:
     )
 
     args = parser.parse_args()
+
+    if args.srt_max_duration is not None and args.srt_max_duration <= 0:
+        parser.error("--srt-max-duration must be > 0")
 
     # Check dependencies first
     dep_errors = check_dependencies()
@@ -425,6 +432,8 @@ Manual setup:
             device=args.device,
             parallel=not args.sequential,
             verbose=not args.quiet,
+            subtitle_mode=args.srt_mode,
+            subtitle_max_duration=args.srt_max_duration,
         )
 
         pipeline = DiarizationPipeline(config)

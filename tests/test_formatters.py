@@ -179,6 +179,171 @@ def test_to_srt_wrapping(long_transcript):
     # Header + Time + Text Lines. Text lines should be > 1
     assert len(lines) > 3
 
+
+def test_to_srt_sentence_mode():
+    words = [
+        AttributedWord("First.", 0.0, 0.5, "SPEAKER_00"),
+        AttributedWord("Second", 0.5, 1.0, "SPEAKER_00"),
+        AttributedWord("sentence!", 1.0, 1.5, "SPEAKER_00"),
+        AttributedWord("Third?", 1.5, 2.0, "SPEAKER_00"),
+    ]
+    transcript = AlignedTranscript(
+        segments=[
+            AttributedSegment(
+                speaker="SPEAKER_00",
+                text="First. Second sentence! Third?",
+                start=0.0,
+                end=2.0,
+                words=words,
+            )
+        ],
+        speakers=["SPEAKER_00"],
+        duration=2.0,
+        language="en",
+    )
+
+    formatter = OutputFormatter()
+    srt = formatter.to_srt(transcript, mode="sentence")
+    entries = srt.strip().split("\n\n")
+
+    assert len(entries) == 3
+    assert "00:00:00,000 --> 00:00:00,500" in entries[0]
+    assert "[SPEAKER_00] First." in entries[0]
+    assert "00:00:00,500 --> 00:00:01,500" in entries[1]
+    assert "[SPEAKER_00] Second sentence!" in entries[1]
+    assert "00:00:01,500 --> 00:00:02,000" in entries[2]
+    assert "[SPEAKER_00] Third?" in entries[2]
+
+
+def test_to_srt_max_duration_split():
+    words = [
+        AttributedWord("word1", 0.0, 1.0, "SPEAKER_00"),
+        AttributedWord("word2", 1.0, 2.0, "SPEAKER_00"),
+        AttributedWord("word3", 2.0, 3.0, "SPEAKER_00"),
+        AttributedWord("word4", 3.0, 4.0, "SPEAKER_00"),
+        AttributedWord("word5", 4.0, 5.0, "SPEAKER_00"),
+        AttributedWord("word6", 5.0, 6.0, "SPEAKER_00"),
+    ]
+    transcript = AlignedTranscript(
+        segments=[
+            AttributedSegment(
+                speaker="SPEAKER_00",
+                text="word1 word2 word3 word4 word5 word6",
+                start=0.0,
+                end=6.0,
+                words=words,
+            )
+        ],
+        speakers=["SPEAKER_00"],
+        duration=6.0,
+        language="en",
+    )
+
+    formatter = OutputFormatter()
+    srt = formatter.to_srt(transcript, mode="speaker", max_duration=2.0)
+    entries = srt.strip().split("\n\n")
+
+    assert len(entries) == 3
+    assert "00:00:00,000 --> 00:00:02,000" in entries[0]
+    assert "00:00:02,000 --> 00:00:04,000" in entries[1]
+    assert "00:00:04,000 --> 00:00:06,000" in entries[2]
+
+
+def test_to_srt_sentence_mode_with_max_duration():
+    words = [
+        AttributedWord("This", 0.0, 1.0, "SPEAKER_00"),
+        AttributedWord("is", 1.0, 2.0, "SPEAKER_00"),
+        AttributedWord("long", 2.0, 3.0, "SPEAKER_00"),
+        AttributedWord("sentence.", 3.0, 4.0, "SPEAKER_00"),
+        AttributedWord("Next.", 4.0, 5.0, "SPEAKER_00"),
+    ]
+    transcript = AlignedTranscript(
+        segments=[
+            AttributedSegment(
+                speaker="SPEAKER_00",
+                text="This is long sentence. Next.",
+                start=0.0,
+                end=5.0,
+                words=words,
+            )
+        ],
+        speakers=["SPEAKER_00"],
+        duration=5.0,
+        language="en",
+    )
+
+    formatter = OutputFormatter()
+    srt = formatter.to_srt(transcript, mode="sentence", max_duration=2.0)
+    entries = srt.strip().split("\n\n")
+
+    assert len(entries) == 3
+    assert "00:00:00,000 --> 00:00:02,000" in entries[0]
+    assert "00:00:02,000 --> 00:00:04,000" in entries[1]
+    assert "00:00:04,000 --> 00:00:05,000" in entries[2]
+
+
+def test_to_srt_sentence_mode_without_speaker():
+    words = [
+        AttributedWord("First.", 0.0, 1.0, "SPEAKER_00"),
+        AttributedWord("Second.", 1.0, 2.0, "SPEAKER_00"),
+    ]
+    transcript = AlignedTranscript(
+        segments=[
+            AttributedSegment(
+                speaker="SPEAKER_00",
+                text="First. Second.",
+                start=0.0,
+                end=2.0,
+                words=words,
+            )
+        ],
+        speakers=["SPEAKER_00"],
+        duration=2.0,
+        language="en",
+    )
+
+    formatter = OutputFormatter()
+    srt = formatter.to_srt(transcript, mode="sentence", include_speaker=False)
+    assert "[SPEAKER_00]" not in srt
+
+
+def test_to_vtt_sentence_mode():
+    words = [
+        AttributedWord("One.", 0.0, 0.5, "SPEAKER_00"),
+        AttributedWord("Two.", 0.5, 1.0, "SPEAKER_00"),
+    ]
+    transcript = AlignedTranscript(
+        segments=[
+            AttributedSegment(
+                speaker="SPEAKER_00",
+                text="One. Two.",
+                start=0.0,
+                end=1.0,
+                words=words,
+            )
+        ],
+        speakers=["SPEAKER_00"],
+        duration=1.0,
+        language="en",
+    )
+
+    formatter = OutputFormatter()
+    vtt = formatter.to_vtt(transcript, mode="sentence")
+    assert "00:00:00.000 --> 00:00:00.500" in vtt
+    assert "00:00:00.500 --> 00:00:01.000" in vtt
+
+
+def test_to_srt_invalid_mode(sample_transcript):
+    formatter = OutputFormatter()
+    with pytest.raises(ValueError):
+        formatter.to_srt(sample_transcript, mode="invalid")
+
+
+def test_to_srt_invalid_max_duration(sample_transcript):
+    formatter = OutputFormatter()
+    with pytest.raises(ValueError):
+        formatter.to_srt(sample_transcript, max_duration=0.0)
+
 def test_to_vtt(sample_transcript):
     formatter = OutputFormatter()
     vtt = formatter.to_vtt(sample_transcript)
