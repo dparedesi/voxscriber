@@ -3,14 +3,17 @@ VoxScriber Pipeline
 
 Orchestrates the complete speaker diarization workflow:
 1. Audio preprocessing
-2. Parallel transcription and diarization
+2. Parallel transcription and diarization (in isolated subprocesses)
 3. Alignment
 4. Output formatting
+
+Transcription (MLX Whisper) and diarization (PyTorch/pyannote) run in
+separate subprocesses to avoid OpenMP runtime and Metal GPU conflicts.
 """
 
+import multiprocessing
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,6 +23,36 @@ from .diarizer import DiarizationResult, Diarizer
 from .formatters import OutputFormatter, TranscriptPrinter
 from .preprocessor import AudioPreprocessor
 from .transcriber import Transcriber, TranscriptionResult
+
+
+def _transcribe_worker(audio_path, model, language):
+    """Run transcription in an isolated subprocess.
+
+    Must be a top-level function for pickle compatibility with
+    multiprocessing spawn.
+    """
+    transcriber = Transcriber(model=model, language=language)
+    return transcriber.transcribe(
+        Path(audio_path),
+        word_timestamps=True,
+        verbose=False,
+    )
+
+
+def _diarize_worker(audio_path, hf_token, num_speakers, min_speakers, max_speakers, device):
+    """Run diarization in an isolated subprocess.
+
+    Must be a top-level function for pickle compatibility with
+    multiprocessing spawn.
+    """
+    diarizer = Diarizer(
+        hf_token=hf_token,
+        num_speakers=num_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        device=device,
+    )
+    return diarizer.diarize(Path(audio_path), verbose=False)
 
 
 @dataclass
@@ -174,42 +207,52 @@ class DiarizationPipeline:
 
         return aligned
 
+    def _run_in_subprocess(self, fn, *args):
+        """Run a function in an isolated subprocess using multiprocessing spawn.
+
+        This ensures MLX and PyTorch never coexist in the same process,
+        avoiding OpenMP runtime conflicts and Metal GPU contention.
+        """
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(1) as pool:
+            return pool.apply(fn, args)
+
     def _process_parallel(
         self,
         whisper_audio_path: Path,
         diarize_audio_path: Path,
     ) -> tuple[TranscriptionResult, DiarizationResult]:
-        """Run transcription and diarization in parallel.
+        """Run transcription and diarization in parallel subprocesses.
 
-        Args:
-            whisper_audio_path: Preprocessed audio (16kHz mono) for Whisper
-            diarize_audio_path: Original audio for diarization (preserves speaker characteristics)
+        Each task runs in its own spawned subprocess so MLX Whisper and
+        PyTorch/pyannote never share a process (avoiding OpenMP and Metal conflicts).
         """
-        self._log("Running transcription and diarization in parallel...")
+        self._log("Running transcription and diarization in parallel (subprocess isolation)...")
 
-        transcription = None
-        diarization = None
-        transcription_time = 0
-        diarization_time = 0
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit both tasks with appropriate audio paths
-            future_transcribe = executor.submit(
-                self._timed_transcribe, whisper_audio_path
+        ctx = multiprocessing.get_context("spawn")
+        with ctx.Pool(2) as pool:
+            t_start = time.time()
+            future_transcribe = pool.apply_async(
+                _transcribe_worker,
+                (str(whisper_audio_path), self.config.whisper_model, self.config.language),
             )
-            future_diarize = executor.submit(
-                self._timed_diarize, diarize_audio_path
+            future_diarize = pool.apply_async(
+                _diarize_worker,
+                (
+                    str(diarize_audio_path),
+                    self.config.hf_token or os.environ.get("HF_TOKEN"),
+                    self.config.num_speakers,
+                    self.config.min_speakers,
+                    self.config.max_speakers,
+                    self.config.device,
+                ),
             )
 
-            # Collect results
-            for future in as_completed([future_transcribe, future_diarize]):
-                result, elapsed, task_name = future.result()
-                if task_name == "transcribe":
-                    transcription = result
-                    transcription_time = elapsed
-                else:
-                    diarization = result
-                    diarization_time = elapsed
+            transcription = future_transcribe.get()
+            transcription_time = time.time() - t_start
+
+            diarization = future_diarize.get()
+            diarization_time = time.time() - t_start
 
         self._log(f"Transcription: {transcription_time:.1f}s | Diarization: {diarization_time:.1f}s")
         return transcription, diarization
@@ -219,40 +262,35 @@ class DiarizationPipeline:
         whisper_audio_path: Path,
         diarize_audio_path: Path,
     ) -> tuple[TranscriptionResult, DiarizationResult]:
-        """Run transcription and diarization sequentially.
+        """Run transcription and diarization sequentially in isolated subprocesses.
 
-        Args:
-            whisper_audio_path: Preprocessed audio (16kHz mono) for Whisper
-            diarize_audio_path: Original audio for diarization (preserves speaker characteristics)
+        Each task runs in its own spawned subprocess so MLX Whisper and
+        PyTorch/pyannote never share a process.
         """
-        self._log("Transcribing...")
-        transcription, t_time, _ = self._timed_transcribe(whisper_audio_path)
-        self._log(f"Transcription complete ({t_time:.1f}s)")
+        self._log("Transcribing (subprocess)...")
+        t_start = time.time()
+        transcription = self._run_in_subprocess(
+            _transcribe_worker,
+            str(whisper_audio_path),
+            self.config.whisper_model,
+            self.config.language,
+        )
+        self._log(f"Transcription complete ({time.time() - t_start:.1f}s)")
 
-        self._log("Diarizing...")
-        diarization, d_time, _ = self._timed_diarize(diarize_audio_path)
-        self._log(f"Diarization complete ({d_time:.1f}s)")
+        self._log("Diarizing (subprocess)...")
+        d_start = time.time()
+        diarization = self._run_in_subprocess(
+            _diarize_worker,
+            str(diarize_audio_path),
+            self.config.hf_token or os.environ.get("HF_TOKEN"),
+            self.config.num_speakers,
+            self.config.min_speakers,
+            self.config.max_speakers,
+            self.config.device,
+        )
+        self._log(f"Diarization complete ({time.time() - d_start:.1f}s)")
 
         return transcription, diarization
-
-    def _timed_transcribe(self, audio_path: Path) -> tuple:
-        """Transcribe with timing."""
-        start = time.time()
-        result = self.transcriber.transcribe(
-            audio_path,
-            word_timestamps=True,
-            verbose=False,
-        )
-        return result, time.time() - start, "transcribe"
-
-    def _timed_diarize(self, audio_path: Path) -> tuple:
-        """Diarize with timing."""
-        start = time.time()
-        result = self.diarizer.diarize(
-            audio_path,
-            verbose=False,
-        )
-        return result, time.time() - start, "diarize"
 
     def print_transcript(
         self,

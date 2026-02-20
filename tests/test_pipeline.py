@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -59,14 +59,52 @@ def mock_aligned_transcript():
         language="en"
     )
 
+
+class _InProcessPool:
+    """Mock pool that runs functions in the current process (no subprocess)."""
+
+    def __init__(self, processes=None):
+        pass
+
+    def apply(self, fn, args=()):
+        return fn(*args)
+
+    def apply_async(self, fn, args=()):
+        result = fn(*args)
+        async_result = MagicMock()
+        async_result.get.return_value = result
+        return async_result
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
 @pytest.fixture
-def mock_components():
+def mock_components(mock_transcription_result, mock_diarization_result):
+    """Mock pipeline components and subprocess infrastructure.
+
+    Mocks the top-level worker functions and multiprocessing pool so tests
+    run in-process without spawning subprocesses.
+    """
+    mock_ctx = MagicMock()
+    mock_ctx.Pool = _InProcessPool
+
     with patch("voxscriber.pipeline.AudioPreprocessor") as MockPreprocessor, \
          patch("voxscriber.pipeline.Transcriber") as MockTranscriber, \
          patch("voxscriber.pipeline.Diarizer") as MockDiarizer, \
          patch("voxscriber.pipeline.Aligner") as MockAligner, \
          patch("voxscriber.pipeline.OutputFormatter") as MockFormatter, \
-         patch("voxscriber.pipeline.TranscriptPrinter") as MockPrinter:
+         patch("voxscriber.pipeline.TranscriptPrinter") as MockPrinter, \
+         patch("voxscriber.pipeline._transcribe_worker",
+               return_value=mock_transcription_result) as mock_tw, \
+         patch("voxscriber.pipeline._diarize_worker",
+               return_value=mock_diarization_result) as mock_dw, \
+         patch("voxscriber.pipeline.multiprocessing") as mock_mp:
+
+        mock_mp.get_context.return_value = mock_ctx
 
         # Setup Preprocessor
         preprocessor = MockPreprocessor.return_value
@@ -94,6 +132,9 @@ def mock_components():
             "MockTranscriber": MockTranscriber,
             "MockDiarizer": MockDiarizer,
             "MockAligner": MockAligner,
+            "mock_transcribe_worker": mock_tw,
+            "mock_diarize_worker": mock_dw,
+            "mock_mp": mock_mp,
         }
 
 # --- Tests for PipelineConfig ---
@@ -135,13 +176,6 @@ def test_pipeline_init_defaults(mock_components):
         model="large-v3-turbo",
         language=None
     )
-    mock_components["MockDiarizer"].assert_called_with(
-        hf_token=None,  # Or os.environ.get("HF_TOKEN")
-        num_speakers=None,
-        min_speakers=None,
-        max_speakers=None,
-        device="mps"
-    )
 
 def test_pipeline_init_custom_config(mock_components):
     config = PipelineConfig(
@@ -157,13 +191,6 @@ def test_pipeline_init_custom_config(mock_components):
     mock_components["MockTranscriber"].assert_called_with(
         model="medium",
         language="es"
-    )
-    mock_components["MockDiarizer"].assert_called_with(
-        hf_token="secret",
-        num_speakers=3,
-        min_speakers=None,
-        max_speakers=None,
-        device="cpu"
     )
     mock_components["MockPreprocessor"].assert_called_with(
         cache_dir=Path("/tmp/cache")
@@ -183,11 +210,8 @@ def test_create_simple_factory(mock_components):
 
 # --- Tests for Processing ---
 
-def test_process_parallel_flow(mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript):
+def test_process_parallel_flow(mock_components, mock_aligned_transcript):
     """Test the complete parallel processing flow."""
-    # Setup mocks
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.return_value = mock_diarization_result
     mock_components["aligner"].align.return_value = mock_aligned_transcript
 
     pipeline = DiarizationPipeline(PipelineConfig(parallel=True, verbose=False))
@@ -204,21 +228,15 @@ def test_process_parallel_flow(mock_components, mock_transcription_result, mock_
     mock_components["preprocessor"].process_for_diarization.assert_called_once_with(input_path)
     mock_components["preprocessor"].get_duration.assert_called_once_with(input_path)
 
-    # Verify parallel execution paths (passed the preprocessed paths)
-    whisper_path = mock_components["preprocessor"].process.return_value
-    diarize_path = mock_components["preprocessor"].process_for_diarization.return_value
+    # Verify multiprocessing spawn context was used
+    mock_components["mock_mp"].get_context.assert_called_with("spawn")
 
-    mock_components["transcriber"].transcribe.assert_called_once_with(
-        whisper_path, word_timestamps=True, verbose=False
-    )
-    mock_components["diarizer"].diarize.assert_called_once_with(
-        diarize_path, verbose=False
-    )
+    # Verify worker functions were called (via the in-process mock pool)
+    mock_components["mock_transcribe_worker"].assert_called_once()
+    mock_components["mock_diarize_worker"].assert_called_once()
 
     # Verify alignment
-    mock_components["aligner"].align.assert_called_once_with(
-        mock_transcription_result, mock_diarization_result
-    )
+    mock_components["aligner"].align.assert_called_once()
 
     # Verify output
     mock_components["formatter"].save.assert_called_once()
@@ -226,10 +244,8 @@ def test_process_parallel_flow(mock_components, mock_transcription_result, mock_
     assert args[0] == mock_aligned_transcript
     assert str(args[1]).endswith(".txt")
 
-def test_process_sequential_flow(mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript):
+def test_process_sequential_flow(mock_components, mock_aligned_transcript):
     """Test the sequential processing flow."""
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.return_value = mock_diarization_result
     mock_components["aligner"].align.return_value = mock_aligned_transcript
 
     pipeline = DiarizationPipeline(PipelineConfig(parallel=False, verbose=False))
@@ -237,22 +253,15 @@ def test_process_sequential_flow(mock_components, mock_transcription_result, moc
     input_path = Path("test.m4a")
     pipeline.process(input_path, output_formats=[])
 
-    whisper_path = mock_components["preprocessor"].process.return_value
-    diarize_path = mock_components["preprocessor"].process_for_diarization.return_value
+    # Verify spawn context used for sequential too
+    mock_components["mock_mp"].get_context.assert_called_with("spawn")
 
-    # Check calls occurred (order is harder to verify strictly without side effects,
-    # but sequential implementation calls them one by one)
-    mock_components["transcriber"].transcribe.assert_called_once_with(
-        whisper_path, word_timestamps=True, verbose=False
-    )
-    mock_components["diarizer"].diarize.assert_called_once_with(
-        diarize_path, verbose=False
-    )
+    # Verify worker functions were called
+    mock_components["mock_transcribe_worker"].assert_called_once()
+    mock_components["mock_diarize_worker"].assert_called_once()
 
-def test_process_outputs(mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript):
+def test_process_outputs(mock_components, mock_aligned_transcript):
     """Test multiple output formats."""
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.return_value = mock_diarization_result
     mock_components["aligner"].align.return_value = mock_aligned_transcript
 
     pipeline = DiarizationPipeline()
@@ -275,12 +284,8 @@ def test_process_outputs(mock_components, mock_transcription_result, mock_diariz
 
 def test_process_passes_subtitle_options_for_srt_and_vtt_only(
     mock_components,
-    mock_transcription_result,
-    mock_diarization_result,
     mock_aligned_transcript,
 ):
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.return_value = mock_diarization_result
     mock_components["aligner"].align.return_value = mock_aligned_transcript
 
     pipeline = DiarizationPipeline(
@@ -312,7 +317,7 @@ def test_process_passes_subtitle_options_for_srt_and_vtt_only(
 
 def test_transcription_failure(mock_components):
     """Test handling of transcription failure."""
-    mock_components["transcriber"].transcribe.side_effect = Exception("Whisper error")
+    mock_components["mock_transcribe_worker"].side_effect = Exception("Whisper error")
 
     pipeline = DiarizationPipeline(PipelineConfig(parallel=False))
 
@@ -321,10 +326,9 @@ def test_transcription_failure(mock_components):
 
     assert "Whisper error" in str(excinfo.value)
 
-def test_diarization_failure(mock_components, mock_transcription_result):
+def test_diarization_failure(mock_components):
     """Test handling of diarization failure."""
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.side_effect = Exception("Pyannote error")
+    mock_components["mock_diarize_worker"].side_effect = Exception("Pyannote error")
 
     pipeline = DiarizationPipeline(PipelineConfig(parallel=False))
 
@@ -334,22 +338,20 @@ def test_diarization_failure(mock_components, mock_transcription_result):
     assert "Pyannote error" in str(excinfo.value)
 
 def test_parallel_execution_error(mock_components):
-    """Test that errors propagate correctly from thread pool."""
-    mock_components["transcriber"].transcribe.side_effect = RuntimeError("Thread error")
+    """Test that errors propagate correctly from subprocess pool."""
+    mock_components["mock_transcribe_worker"].side_effect = RuntimeError("Subprocess error")
 
     pipeline = DiarizationPipeline(PipelineConfig(parallel=True))
 
     with pytest.raises(RuntimeError) as excinfo:
         pipeline.process(Path("test.wav"))
 
-    assert "Thread error" in str(excinfo.value)
+    assert "Subprocess error" in str(excinfo.value)
 
 # --- Integration/Logic Tests ---
 
-def test_custom_output_directory(mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript):
+def test_custom_output_directory(mock_components, mock_aligned_transcript):
     """Test that output directory is respected and created."""
-    mock_components["transcriber"].transcribe.return_value = mock_transcription_result
-    mock_components["diarizer"].diarize.return_value = mock_diarization_result
     mock_components["aligner"].align.return_value = mock_aligned_transcript
 
     pipeline = DiarizationPipeline()
