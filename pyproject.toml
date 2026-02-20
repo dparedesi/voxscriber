@@ -46,6 +46,9 @@ dev = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v"
+markers = [
+    "integration: end-to-end tests requiring ML models and GPU (deselect with '-m \"not integration\"')",
+]
 
 [project.scripts]
 voxscriber = "voxscriber.cli:main"
