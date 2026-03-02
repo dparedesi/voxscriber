@@ -21,10 +21,10 @@ Both backends are combined with Pyannote Audio 3.1 to produce speaker-attributed
 src/voxscriber/
 ├── cli.py          # CLI entry point, argument parsing, dependency checks, doctor command
 ├── pipeline.py     # Main orchestrator (DiarizationPipeline, PipelineConfig)
-├── transcriber.py  # MLX Whisper wrapper
+├── transcriber.py  # Pluggable Whisper backend (MLX or faster-whisper)
 ├── diarizer.py     # Pyannote speaker diarization
 ├── aligner.py      # Word-speaker alignment + hallucination filter
-├── preprocessor.py # Audio format conversion (ffmpeg)
+├── preprocessor.py # Audio format conversion (ffmpeg CLI or PyAV fallback)
 ├── formatters.py   # Output formatting (md, txt, json, srt, vtt)
 ├── __init__.py     # Public exports
 └── __main__.py     # python -m voxscriber support
@@ -49,7 +49,7 @@ make lint           # ruff check + format check
 make format         # ruff format
 
 # Testing
-pytest              # Run full test suite (104 tests)
+pytest              # Run full test suite (121 tests)
 pytest -v           # Verbose output
 pytest tests/test_cli.py  # Run specific module tests
 
@@ -68,9 +68,9 @@ voxscriber audio.m4a --speakers 2
 
 ## Architecture
 
-1. **Preprocessor** converts input audio to 16kHz WAV
-2. **Transcriber** (MLX Whisper) produces word-level timestamps
-3. **Diarizer** (Pyannote) produces speaker segments
+1. **Preprocessor** converts input audio to 16kHz WAV (ffmpeg CLI if available, PyAV fallback)
+2. **Transcriber** (MLX Whisper on macOS, faster-whisper on Linux) produces word-level timestamps
+3. **Diarizer** (Pyannote, fed via soundfile waveforms) produces speaker segments
 4. **Aligner** maps words to speakers, filters hallucinations
 5. **Formatters** output to requested formats
 
@@ -78,14 +78,16 @@ Transcription and diarization run in parallel by default for speed.
 
 ## Key Dependencies
 
-- `mlx-whisper` - Apple Silicon optimized Whisper (macOS only, optional)
-- `faster-whisper` - CTranslate2-based Whisper (Linux/CUDA/CPU, optional)
+- `mlx-whisper` - Apple Silicon optimized Whisper (auto-installed on macOS arm64)
+- `faster-whisper` - CTranslate2-based Whisper (auto-installed on Linux/other)
 - `pyannote.audio` - Speaker diarization (requires HF token + terms acceptance)
-- `pydub` + `soundfile` - Audio handling
+- `soundfile` - Audio loading (used to feed pyannote, bypasses torchcodec)
+- `PyAV` - Audio decoding fallback when ffmpeg CLI is not installed (bundled with faster-whisper)
+- `pydub` - Audio handling
 - `rich` - Console output
 - `pytest` + `pytest-mock` - Testing (dev dependency)
 
-One of `mlx-whisper` or `faster-whisper` is required. The backend is auto-detected based on platform.
+Backend is auto-installed via platform markers in pyproject.toml. `pip install voxscriber` just works.
 
 ## Environment Variables
 
@@ -111,8 +113,10 @@ One of `mlx-whisper` or `faster-whisper` is required. The backend is auto-detect
 ## Important Notes
 
 - Pyannote requires users to accept terms at huggingface.co/pyannote/speaker-diarization-3.1
-- On macOS: uses MLX backend (Apple Silicon only). Install with `pip install voxscriber[mlx]`
-- On Linux: uses faster-whisper backend (CUDA or CPU). Install with `pip install voxscriber[cuda]`
+- `pip install voxscriber` auto-installs the right backend via platform markers
+- Zero system dependencies: no ffmpeg, no sudo, no apt/brew required
+- FFmpeg CLI is used when available (faster), otherwise falls back to PyAV
+- Diarization uses soundfile to load audio, bypassing torchcodec entirely
+- Default model is platform-aware: large-v3-turbo on GPU/MLX, small on CPU
 - Device auto-detection: mps on macOS, cuda if available on Linux, else cpu
 - Version must be bumped for any PyPI release (can't overwrite)
-- ffmpeg@7 is "keg-only" on Homebrew (macOS) - use `voxscriber-doctor` to configure DYLD_LIBRARY_PATH

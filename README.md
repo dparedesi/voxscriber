@@ -11,34 +11,21 @@ Professional speaker diarization running 100% locally. Supports [MLX Whisper](ht
 
 ## Requirements
 
-**macOS (Apple Silicon):**
-- macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
-- FFmpeg 7 (`brew install ffmpeg@7 && brew link ffmpeg@7`)
-- [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
-
-**Linux:**
-- Python 3.10+
-- FFmpeg 4-7 (`sudo apt install ffmpeg`)
 - [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
 - For GPU: CUDA 12 + cuDNN 9 (optional, CPU works too)
+
+That's it. No FFmpeg, no system packages, no sudo required.
 
 ## Installation
 
 ```bash
-# macOS (Apple Silicon)
-pip install voxscriber[mlx]
-
-# Linux with CUDA
-pip install voxscriber[cuda]
-
-# Linux CPU-only
-pip install voxscriber[cuda]  # faster-whisper works on CPU too
-
-# Or with pipx (recommended for CLI tools)
-pipx install "voxscriber[mlx]"   # macOS
-pipx install "voxscriber[cuda]"  # Linux
+pip install voxscriber
 ```
+
+The right Whisper backend is installed automatically:
+- macOS Apple Silicon: MLX Whisper
+- Linux/other: faster-whisper (CUDA or CPU)
 
 ### Setup Hugging Face Token
 
@@ -119,7 +106,7 @@ voxscriber --help
 
   --speakers, -s    Number of speakers (if known)
   --language, -l    Force language (e.g., 'en', 'es')
-  --model, -m       Whisper model (default: large-v3-turbo)
+  --model, -m       Whisper model (default: large-v3-turbo on GPU/MLX, small on CPU)
   --formats, -f     Output formats (default: md,txt)
   --output, -o      Output directory
   --device          auto (default), mps, cuda, or cpu
@@ -141,30 +128,7 @@ Run the diagnostic tool to check your setup:
 voxscriber-doctor
 ```
 
-This will check FFmpeg, torchcodec, and HF_TOKEN, and offer to fix common issues automatically.
-
-### FFmpeg & torchcodec Issues
-
-VoxScriber uses pyannote-audio which requires torchcodec, and torchcodec requires FFmpeg 4-7.
-
-**"FFmpeg 8 detected" or "torchcodec fails"**
-
-FFmpeg 8 is not yet supported. Install FFmpeg 7:
-
-```bash
-brew uninstall ffmpeg
-brew install ffmpeg@7 && brew link ffmpeg@7
-```
-
-**"Library not loaded: @rpath/libavutil" or "no LC_RPATH's found"**
-
-This happens because `ffmpeg@7` is "keg-only" - Homebrew doesn't symlink it automatically. Add to your `~/.zshrc`:
-
-```bash
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/ffmpeg@7/lib:$DYLD_LIBRARY_PATH"
-```
-
-Then restart your terminal or run `source ~/.zshrc`.
+This will check FFmpeg availability and HF_TOKEN, and offer to fix common issues automatically.
 
 ### Other Issues
 
