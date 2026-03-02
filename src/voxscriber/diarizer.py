@@ -168,6 +168,21 @@ class Diarizer:
         if verbose:
             print(f"Diarizing: {audio_path}")
 
+        # Load audio with soundfile and pass as waveform dict.
+        # This bypasses torchcodec (which needs system FFmpeg shared libs)
+        # and works in environments without sudo/system packages.
+        import soundfile as sf
+        import torch
+
+        data, sample_rate = sf.read(str(audio_path), dtype="float32")
+        # soundfile returns (samples,) for mono, (samples, channels) for stereo
+        if data.ndim == 1:
+            data = data[None, :]  # (1, samples)
+        else:
+            data = data.T  # (channels, samples)
+        waveform = torch.from_numpy(data)
+        audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+
         # Build diarization options
         options = {}
         if self.num_speakers is not None:
@@ -178,7 +193,7 @@ class Diarizer:
             options["max_speakers"] = self.max_speakers
 
         # Run diarization
-        result = self._pipeline(str(audio_path), **options)
+        result = self._pipeline(audio_input, **options)
 
         # Pyannote 4.x returns DiarizeOutput, extract the Annotation
         if hasattr(result, 'speaker_diarization'):

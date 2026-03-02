@@ -202,13 +202,12 @@ def check_dependencies() -> list[str]:
     Check system dependencies and return list of errors.
 
     Validates:
-    1. FFmpeg is installed and version is 4-7
-    2. On macOS: torchcodec native library can load FFmpeg
-    3. On macOS: DYLD_LIBRARY_PATH is set if using keg-only ffmpeg@7
+    1. FFmpeg is installed (needed for audio preprocessing)
+    2. FFmpeg version is 4-7
     """
     errors = []
 
-    # Step 1: Check FFmpeg installation and version
+    # Check FFmpeg installation and version
     ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
 
     if not ffmpeg_path:
@@ -221,9 +220,12 @@ def check_dependencies() -> list[str]:
             errors.append(
                 "FFmpeg not found.\n"
                 "  Fix: sudo apt install ffmpeg  (Debian/Ubuntu)\n"
-                "       sudo dnf install ffmpeg  (Fedora)"
+                "       sudo dnf install ffmpeg  (Fedora)\n"
+                "  No sudo? Download a static build:\n"
+                "       curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ\n"
+                "       cp ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe ~/.local/bin/"
             )
-        return errors  # Can't proceed without FFmpeg
+        return errors
 
     if ffmpeg_version is not None:
         if ffmpeg_version > 7:
@@ -234,10 +236,8 @@ def check_dependencies() -> list[str]:
             )
             errors.append(
                 f"FFmpeg {ffmpeg_version} detected, but version 4-7 is required.\n"
-                "  torchcodec (used by pyannote-audio) does not yet support FFmpeg 8.\n"
                 + fix_msg
             )
-            return errors
         elif ffmpeg_version < 4:
             fix_msg = (
                 "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
@@ -248,49 +248,6 @@ def check_dependencies() -> list[str]:
                 f"FFmpeg {ffmpeg_version} is too old. Version 4-7 required.\n"
                 + fix_msg
             )
-            return errors
-
-    # Step 2: Check if torchcodec can load its native library
-    torchcodec_ok, torchcodec_error = _check_torchcodec_native_lib()
-
-    if torchcodec_ok:
-        return []  # All good!
-
-    # Step 3: torchcodec failed - diagnose the issue
-    is_library_path_error = any(x in torchcodec_error for x in [
-        "libavutil", "libtorchcodec", "Library not loaded", "no LC_RPATH"
-    ])
-
-    if is_library_path_error and IS_MACOS:
-        # Check if this is the keg-only ffmpeg@7 issue
-        if _is_ffmpeg7_keg_only() and not _is_dyld_library_path_set():
-            errors.append(
-                "torchcodec cannot find FFmpeg libraries.\n\n"
-                "  This happens because ffmpeg@7 is 'keg-only' - Homebrew doesn't\n"
-                "  symlink it to /opt/homebrew/lib automatically.\n\n"
-                "  Fix: Add this to your ~/.zshrc (or ~/.bashrc):\n\n"
-                f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"\n\n'
-                "  Then restart your terminal or run: source ~/.zshrc"
-            )
-        else:
-            errors.append(
-                "torchcodec cannot load FFmpeg libraries.\n\n"
-                "  Possible fixes:\n"
-                "  1. Reinstall FFmpeg: brew reinstall ffmpeg@7\n"
-                "  2. Ensure FFmpeg 7 is linked: brew link ffmpeg@7\n"
-                "  3. If using ffmpeg@7, add to ~/.zshrc:\n"
-                f'     export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"'
-            )
-    elif is_library_path_error:
-        errors.append(
-            "torchcodec cannot load FFmpeg libraries.\n\n"
-            "  Possible fixes:\n"
-            "  1. Ensure FFmpeg 4-7 is installed and its libraries are on LD_LIBRARY_PATH\n"
-            "  2. Reinstall FFmpeg: sudo apt install ffmpeg  (Debian/Ubuntu)"
-        )
-    else:
-        # Some other torchcodec import error
-        errors.append(f"torchcodec import error: {torchcodec_error}")
 
     return errors
 
@@ -546,8 +503,15 @@ def doctor():
 
     if not ffmpeg_path:
         print("NOT FOUND")
-        print("  FFmpeg is not installed.")
-        print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        print("  FFmpeg is not installed (needed for audio preprocessing).")
+        if IS_MACOS:
+            print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        else:
+            print("  Fix: sudo apt install ffmpeg  (Debian/Ubuntu)")
+            print("       sudo dnf install ffmpeg  (Fedora)")
+            print("  No sudo? Download a static build:")
+            print("       curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ")
+            print("       cp ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe ~/.local/bin/")
         all_ok = False
     elif ffmpeg_version is None:
         print("UNKNOWN VERSION")
@@ -555,89 +519,24 @@ def doctor():
         all_ok = False
     elif ffmpeg_version > 7:
         print(f"VERSION {ffmpeg_version} (unsupported)")
-        print("  torchcodec requires FFmpeg 4-7. Version 8 is not yet supported.")
-        print("  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7")
+        print("  FFmpeg 8 is not yet widely supported. Version 4-7 recommended.")
+        if IS_MACOS:
+            print("  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7")
+        else:
+            print("  Fix: Install FFmpeg 4-7 from your package manager.")
         all_ok = False
     elif ffmpeg_version < 4:
         print(f"VERSION {ffmpeg_version} (too old)")
-        print("  torchcodec requires FFmpeg 4-7.")
-        print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        print("  FFmpeg 4+ required.")
+        if IS_MACOS:
+            print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
+        else:
+            print("  Fix: Install FFmpeg 4+ from your package manager.")
         all_ok = False
     else:
         print(f"OK (version {ffmpeg_version})")
 
-    # Check 2: torchcodec native library
-    print("Checking torchcodec...", end=" ")
-    torchcodec_ok, torchcodec_error = _check_torchcodec_native_lib()
-
-    if torchcodec_ok:
-        print("OK")
-    else:
-        print("FAILED")
-        all_ok = False
-
-        # Diagnose the issue
-        is_library_path_error = any(x in torchcodec_error for x in [
-            "libavutil", "libtorchcodec", "Library not loaded", "no LC_RPATH"
-        ])
-
-        if is_library_path_error and IS_MACOS and _is_ffmpeg7_keg_only():
-            print()
-            print("  torchcodec cannot find FFmpeg libraries.")
-            print("  This is because ffmpeg@7 is 'keg-only' - Homebrew doesn't")
-            print("  symlink it to /opt/homebrew/lib automatically.")
-            print()
-
-            # Check if we can offer to fix it
-            shell_config = _get_shell_config_file()
-            if shell_config:
-                if _check_shell_config_has_dyld_path(shell_config):
-                    print(f"  Your {shell_config.name} already has the DYLD_LIBRARY_PATH export.")
-                    print("  Try restarting your terminal or running:")
-                    print(f"    source {shell_config}")
-                else:
-                    print(f"  Would you like to add the fix to {shell_config}?")
-                    print()
-                    print("  This will append the following line:")
-                    print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
-                    print()
-
-                    try:
-                        response = input("  Add to shell config? [y/N]: ").strip().lower()
-                        if response == "y":
-                            export_line = (
-                                f'\n# Added by voxscriber doctor for ffmpeg@7 support\n'
-                                f'export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"\n'
-                            )
-                            with open(shell_config, "a") as f:
-                                f.write(export_line)
-                            print()
-                            print(f"  Added to {shell_config}!")
-                            print()
-                            print("  To apply the changes, run:")
-                            print(f"    source {shell_config}")
-                            print()
-                            print("  Or restart your terminal.")
-                        else:
-                            print()
-                            print("  Skipped. To fix manually, add this to your shell config:")
-                            print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
-                    except (EOFError, KeyboardInterrupt):
-                        print("\n  Cancelled.")
-            else:
-                print("  Could not detect your shell config file.")
-                print("  Add this to your shell config (~/.zshrc or ~/.bashrc):")
-                print(f'    export DYLD_LIBRARY_PATH="{FFMPEG7_LIB_PATH}:$DYLD_LIBRARY_PATH"')
-        elif is_library_path_error and not IS_MACOS:
-            print()
-            print("  torchcodec cannot find FFmpeg libraries.")
-            print("  Ensure FFmpeg 4-7 is installed and its libraries are discoverable.")
-            print("  Fix: sudo apt install ffmpeg  (Debian/Ubuntu)")
-            print("       sudo dnf install ffmpeg  (Fedora)")
-        else:
-            print(f"  Error: {torchcodec_error[:200]}")
-
-    # Check 3: HF Token
+    # Check 2: HF Token
     print("Checking Hugging Face token...", end=" ")
     token, source = _get_hf_token_source()
 

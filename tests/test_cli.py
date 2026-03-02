@@ -224,43 +224,24 @@ def test_check_dependencies_ffmpeg_version_bad(mock_get_ffmpeg):
     assert "version 4-7 is required" in errors[0]
 
 @patch("voxscriber.cli._get_ffmpeg_info")
-@patch("voxscriber.cli._check_torchcodec_native_lib")
-@patch("voxscriber.cli._is_ffmpeg7_keg_only")
-@patch("voxscriber.cli._is_dyld_library_path_set")
-def test_check_dependencies_torchcodec_failure(mock_dyld, mock_keg, mock_check_tc, mock_get_ffmpeg):
-    """Test torchcodec failure scenarios."""
+def test_check_dependencies_ffmpeg_version_edge_cases(mock_get_ffmpeg):
+    """Test ffmpeg version edge cases in check_dependencies."""
+    # Version 6 is fine
     mock_get_ffmpeg.return_value = ("/path/ffmpeg", 6)
+    errors = cli.check_dependencies()
+    assert len(errors) == 0
 
-    # Scenario 1: Generic error
-    mock_check_tc.return_value = (False, "Some random error")
+    # Version 8 is too new
+    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 8)
     errors = cli.check_dependencies()
     assert len(errors) == 1
-    assert "torchcodec import error" in errors[0]
+    assert "version 4-7" in errors[0].lower() or "FFmpeg 8" in errors[0]
 
-    # Scenario 2: Library path error (generic, on macOS)
-    mock_check_tc.return_value = (False, "Library not loaded: @rpath/libavutil")
-    mock_keg.return_value = False # Not keg only
-    with patch("voxscriber.cli.IS_MACOS", True):
-        errors = cli.check_dependencies()
+    # Version 3 is too old
+    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 3)
+    errors = cli.check_dependencies()
     assert len(errors) == 1
-    assert "torchcodec cannot load FFmpeg" in errors[0]
-
-    # Scenario 3: Keg-only error (needs DYLD_LIBRARY_PATH, macOS)
-    mock_check_tc.return_value = (False, "Library not loaded: @rpath/libavutil")
-    mock_keg.return_value = True
-    mock_dyld.return_value = False
-    with patch("voxscriber.cli.IS_MACOS", True):
-        errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "ffmpeg@7 is 'keg-only'" in errors[0]
-    assert "DYLD_LIBRARY_PATH" in errors[0]
-
-    # Scenario 4: Library path error on Linux
-    mock_check_tc.return_value = (False, "Library not loaded: libavutil")
-    with patch("voxscriber.cli.IS_MACOS", False):
-        errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "LD_LIBRARY_PATH" in errors[0]
+    assert "too old" in errors[0].lower() or "4+" in errors[0]
 
 # --- Tests for Main CLI ---
 
@@ -369,38 +350,15 @@ def test_doctor_token_missing(mock_input, mock_get_token, mock_check_tc, mock_ge
     assert cli.doctor() == 1
 
 @patch("voxscriber.cli._get_ffmpeg_info")
-@patch("voxscriber.cli._check_torchcodec_native_lib")
 @patch("voxscriber.cli._get_hf_token_source")
-@patch("voxscriber.cli._is_ffmpeg7_keg_only")
-@patch("voxscriber.cli._get_shell_config_file")
-@patch("builtins.input", return_value="y") # Say yes to fix
-def test_doctor_interactive_fix(mock_input, mock_get_shell, mock_keg, mock_get_token, mock_check_tc, mock_get_ffmpeg):
-    """Test doctor interactive fix for keg-only ffmpeg."""
+@patch("builtins.input", return_value="y")
+def test_doctor_interactive_fix(mock_input, mock_get_token, mock_get_ffmpeg):
+    """Test doctor passes when ffmpeg and token are OK."""
     mock_get_ffmpeg.return_value = ("/bin/ffmpeg", 6)
-    # Simulate keg-only failure
-    mock_check_tc.return_value = (False, "Library not loaded")
-    mock_keg.return_value = True
-
-    # Mock shell config
-    mock_shell_path = MagicMock(spec=Path)
-    mock_shell_path.name = ".zshrc"
-    mock_get_shell.return_value = mock_shell_path
-
-    # Mock other checks
     mock_get_token.return_value = ("token", "src")
 
-    with patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")), \
-         patch("voxscriber.cli._check_shell_config_has_dyld_path", return_value=False), \
-         patch("voxscriber.cli.IS_MACOS", True), \
-         patch("builtins.open", mock_open()) as mock_file:
-
-        assert cli.doctor() == 1 # Still returns 1 because check initially failed
-
-        # Verify it tried to write to the file
-        mock_file.assert_called_with(mock_shell_path, "a")
-        handle = mock_file()
-        handle.write.assert_called()
-        assert "export DYLD_LIBRARY_PATH" in handle.write.call_args[0][0]
+    with patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
+        assert cli.doctor() == 0  # All checks pass
 
 # --- Additional Tests for Helper Functions ---
 
@@ -590,16 +548,11 @@ def test_doctor_login_cancelled(mock_input, mock_get_token, mock_check_tc, mock_
     assert cli.doctor() == 1
 
 @patch("voxscriber.cli._get_ffmpeg_info", return_value=("/bin/ffmpeg", 6))
-@patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(False, "Library not loaded"))
-@patch("voxscriber.cli._is_ffmpeg7_keg_only", return_value=True)
-@patch("voxscriber.cli._get_shell_config_file", return_value=Path(".zshrc"))
-@patch("voxscriber.cli._check_shell_config_has_dyld_path", return_value=False)
-@patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src"))
-@patch("voxscriber.cli._validate_hf_token", return_value=(True, "user"))
+@patch("voxscriber.cli._get_hf_token_source", return_value=(None, "not found"))
 @patch("builtins.input", side_effect=EOFError)
-def test_doctor_fix_cancelled(mock_input, mock_validate, mock_get_token, mock_check_shell, mock_get_shell, mock_keg, mock_check_tc, mock_get_ffmpeg):
-    """Test doctor interactive fix cancellation."""
-    assert cli.doctor() == 1
+def test_doctor_fix_cancelled(mock_input, mock_get_token, mock_get_ffmpeg):
+    """Test doctor when HF login is cancelled."""
+    assert cli.doctor() == 1  # Fails because no token
 
 
 # --- Tests for Batch Processing ---
