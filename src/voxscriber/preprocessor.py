@@ -5,13 +5,30 @@ Handles audio conversion to the format required by diarization models:
 - 16kHz sample rate
 - Mono channel
 - WAV format (PCM 16-bit)
+
+Uses ffmpeg CLI if available, falls back to PyAV (bundled with faster-whisper)
+for environments without system ffmpeg.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
+import soundfile as sf
+
+
+def _has_ffmpeg() -> bool:
+    """Check if ffmpeg CLI is available."""
+    return shutil.which("ffmpeg") is not None
+
+
+def _has_ffprobe() -> bool:
+    """Check if ffprobe CLI is available."""
+    return shutil.which("ffprobe") is not None
 
 
 class AudioPreprocessor:
@@ -29,8 +46,15 @@ class AudioPreprocessor:
         """
         self.cache_dir = cache_dir or Path(tempfile.gettempdir()) / "diarization_cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._use_ffmpeg = _has_ffmpeg()
 
     def _get_audio_info(self, audio_path: Path) -> dict:
+        """Get audio file information using ffprobe or PyAV."""
+        if _has_ffprobe():
+            return self._get_audio_info_ffprobe(audio_path)
+        return self._get_audio_info_pyav(audio_path)
+
+    def _get_audio_info_ffprobe(self, audio_path: Path) -> dict:
         """Get audio file information using ffprobe."""
         cmd = [
             "ffprobe", "-v", "quiet",
@@ -44,6 +68,25 @@ class AudioPreprocessor:
 
         import json
         return json.loads(result.stdout)
+
+    def _get_audio_info_pyav(self, audio_path: Path) -> dict:
+        """Get audio file information using PyAV."""
+        import av
+
+        container = av.open(str(audio_path))
+        stream = container.streams.audio[0]
+        duration = float(stream.duration * stream.time_base) if stream.duration else 0.0
+        info = {
+            "streams": [{
+                "codec_type": "audio",
+                "codec_name": stream.codec_context.name,
+                "sample_rate": str(stream.sample_rate),
+                "channels": str(stream.channels),
+            }],
+            "format": {"duration": str(duration)},
+        }
+        container.close()
+        return info
 
     def _needs_conversion(self, audio_path: Path) -> bool:
         """Check if audio needs conversion."""
@@ -60,6 +103,50 @@ class AudioPreprocessor:
                     codec == "pcm_s16le"):
                     return False
         return True
+
+    def _convert_with_pyav(
+        self, audio_path: Path, output_path: Path, target_sr: Optional[int], mono: bool
+    ) -> Path:
+        """Convert audio using PyAV (no system ffmpeg needed)."""
+        import av
+
+        container = av.open(str(audio_path))
+        stream = container.streams.audio[0]
+        src_sr = stream.sample_rate
+
+        # Decode all audio frames
+        frames = []
+        for frame in container.decode(audio=0):
+            arr = frame.to_ndarray()
+            # arr shape: (channels, samples) for planar, (samples,) for packed
+            if arr.ndim == 1:
+                arr = arr[None, :]
+            frames.append(arr)
+        container.close()
+
+        if not frames:
+            raise RuntimeError(f"No audio frames decoded from {audio_path}")
+
+        audio = np.concatenate(frames, axis=1).astype(np.float32)
+
+        # Mix to mono if needed
+        if mono and audio.shape[0] > 1:
+            audio = audio.mean(axis=0, keepdims=True)
+
+        # Resample if needed
+        out_sr = target_sr or src_sr
+        if out_sr != src_sr:
+            from fractions import Fraction
+            ratio = Fraction(out_sr, src_sr)
+            new_length = int(audio.shape[1] * ratio)
+            indices = np.linspace(0, audio.shape[1] - 1, new_length)
+            audio = np.stack([np.interp(indices, np.arange(audio.shape[1]), ch) for ch in audio])
+
+        # Write as 16-bit PCM WAV
+        # soundfile expects (samples, channels)
+        data = audio.T
+        sf.write(str(output_path), data, out_sr, subtype="PCM_16")
+        return output_path
 
     def process(self, audio_path: Path, force: bool = False) -> Path:
         """
@@ -89,29 +176,29 @@ class AudioPreprocessor:
             except Exception:
                 pass  # Reprocess if cache validation fails
 
-        # Convert using ffmpeg
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(audio_path),
-            "-vn",  # No video
-            "-acodec", "pcm_s16le",  # PCM 16-bit
-            "-ar", str(self.REQUIRED_SAMPLE_RATE),  # 16kHz
-            "-ac", str(self.REQUIRED_CHANNELS),  # Mono
-            str(output_path)
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Audio conversion failed: {result.stderr}")
+        if self._use_ffmpeg:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(audio_path),
+                "-vn",
+                "-acodec", "pcm_s16le",
+                "-ar", str(self.REQUIRED_SAMPLE_RATE),
+                "-ac", str(self.REQUIRED_CHANNELS),
+                str(output_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Audio conversion failed: {result.stderr}")
+        else:
+            self._convert_with_pyav(
+                audio_path, output_path, target_sr=self.REQUIRED_SAMPLE_RATE, mono=True
+            )
 
         return output_path
 
     def process_for_diarization(self, audio_path: Path, force: bool = False) -> Path:
         """
         Process audio file for diarization (mono only, keeps original sample rate).
-
-        Pyannote works best with mono audio but can handle various sample rates.
-        Multi-channel audio (e.g., 3.0 channel layout) can cause issues.
 
         Args:
             audio_path: Path to input audio file
@@ -130,7 +217,6 @@ class AudioPreprocessor:
             if stream.get("codec_type") == "audio":
                 channels = int(stream.get("channels", 0))
                 codec = stream.get("codec_name", "")
-                # If already mono WAV, use as-is
                 if channels == 1 and codec in ["pcm_s16le", "pcm_f32le"]:
                     return audio_path
 
@@ -142,19 +228,20 @@ class AudioPreprocessor:
         if output_path.exists() and not force:
             return output_path
 
-        # Convert to mono WAV, keeping original sample rate
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(audio_path),
-            "-vn",  # No video
-            "-acodec", "pcm_s16le",  # PCM 16-bit
-            "-ac", "1",  # Mono (crucial for pyannote)
-            str(output_path)
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise RuntimeError(f"Audio conversion for diarization failed: {result.stderr}")
+        if self._use_ffmpeg:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(audio_path),
+                "-vn",
+                "-acodec", "pcm_s16le",
+                "-ac", "1",
+                str(output_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Audio conversion for diarization failed: {result.stderr}")
+        else:
+            self._convert_with_pyav(audio_path, output_path, target_sr=None, mono=True)
 
         return output_path
 

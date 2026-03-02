@@ -3,4 +3,4 @@
 from .pipeline import DiarizationPipeline, PipelineConfig
 
 __all__ = ["DiarizationPipeline", "PipelineConfig"]
-__version__ = "0.2.1"
+__version__ = "0.2.2"

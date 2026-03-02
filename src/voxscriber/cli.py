@@ -199,57 +199,11 @@ def _is_dyld_library_path_set() -> bool:
 
 def check_dependencies() -> list[str]:
     """
-    Check system dependencies and return list of errors.
+    Check system dependencies and return list of warnings (non-blocking).
 
-    Validates:
-    1. FFmpeg is installed (needed for audio preprocessing)
-    2. FFmpeg version is 4-7
+    FFmpeg CLI is optional: the preprocessor falls back to PyAV if not found.
     """
-    errors = []
-
-    # Check FFmpeg installation and version
-    ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
-
-    if not ffmpeg_path:
-        if IS_MACOS:
-            errors.append(
-                "FFmpeg not found.\n"
-                "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
-            )
-        else:
-            errors.append(
-                "FFmpeg not found.\n"
-                "  Fix: sudo apt install ffmpeg  (Debian/Ubuntu)\n"
-                "       sudo dnf install ffmpeg  (Fedora)\n"
-                "  No sudo? Download a static build:\n"
-                "       curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ\n"
-                "       cp ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe ~/.local/bin/"
-            )
-        return errors
-
-    if ffmpeg_version is not None:
-        if ffmpeg_version > 7:
-            fix_msg = (
-                "  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7"
-                if IS_MACOS else
-                "  Fix: Install FFmpeg 4-7 from your package manager."
-            )
-            errors.append(
-                f"FFmpeg {ffmpeg_version} detected, but version 4-7 is required.\n"
-                + fix_msg
-            )
-        elif ffmpeg_version < 4:
-            fix_msg = (
-                "  Fix: brew install ffmpeg@7 && brew link ffmpeg@7"
-                if IS_MACOS else
-                "  Fix: Install FFmpeg 4+ from your package manager."
-            )
-            errors.append(
-                f"FFmpeg {ffmpeg_version} is too old. Version 4-7 required.\n"
-                + fix_msg
-            )
-
-    return errors
+    return []
 
 
 def main():
@@ -497,42 +451,16 @@ def doctor():
 
     all_ok = True
 
-    # Check 1: FFmpeg
+    # Check 1: FFmpeg (optional, PyAV fallback available)
     print("Checking FFmpeg...", end=" ")
     ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
 
     if not ffmpeg_path:
-        print("NOT FOUND")
-        print("  FFmpeg is not installed (needed for audio preprocessing).")
-        if IS_MACOS:
-            print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
-        else:
-            print("  Fix: sudo apt install ffmpeg  (Debian/Ubuntu)")
-            print("       sudo dnf install ffmpeg  (Fedora)")
-            print("  No sudo? Download a static build:")
-            print("       curl -sL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ")
-            print("       cp ffmpeg-*-static/ffmpeg ffmpeg-*-static/ffprobe ~/.local/bin/")
-        all_ok = False
+        print("NOT FOUND (optional, using PyAV fallback)")
     elif ffmpeg_version is None:
-        print("UNKNOWN VERSION")
-        print(f"  FFmpeg found at {ffmpeg_path} but couldn't determine version.")
-        all_ok = False
-    elif ffmpeg_version > 7:
-        print(f"VERSION {ffmpeg_version} (unsupported)")
-        print("  FFmpeg 8 is not yet widely supported. Version 4-7 recommended.")
-        if IS_MACOS:
-            print("  Fix: brew uninstall ffmpeg && brew install ffmpeg@7 && brew link ffmpeg@7")
-        else:
-            print("  Fix: Install FFmpeg 4-7 from your package manager.")
-        all_ok = False
-    elif ffmpeg_version < 4:
-        print(f"VERSION {ffmpeg_version} (too old)")
-        print("  FFmpeg 4+ required.")
-        if IS_MACOS:
-            print("  Fix: brew install ffmpeg@7 && brew link ffmpeg@7")
-        else:
-            print("  Fix: Install FFmpeg 4+ from your package manager.")
-        all_ok = False
+        print(f"FOUND at {ffmpeg_path} (unknown version)")
+    elif ffmpeg_version > 7 or ffmpeg_version < 4:
+        print(f"VERSION {ffmpeg_version} (unsupported, using PyAV fallback)")
     else:
         print(f"OK (version {ffmpeg_version})")
 

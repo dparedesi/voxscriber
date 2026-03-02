@@ -201,47 +201,28 @@ def test_check_dependencies_success(mock_check_tc, mock_get_ffmpeg):
 
 @patch("voxscriber.cli._get_ffmpeg_info")
 def test_check_dependencies_ffmpeg_missing(mock_get_ffmpeg):
-    """Test missing FFmpeg."""
+    """Test check_dependencies is non-blocking (ffmpeg optional)."""
     mock_get_ffmpeg.return_value = (None, None)
-
-    errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "FFmpeg not found" in errors[0]
-
-@patch("voxscriber.cli._get_ffmpeg_info")
-def test_check_dependencies_ffmpeg_version_bad(mock_get_ffmpeg):
-    """Test bad FFmpeg versions."""
-    # Too old
-    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 3)
-    errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "too old" in errors[0]
-
-    # Too new
-    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 8)
-    errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "version 4-7 is required" in errors[0]
-
-@patch("voxscriber.cli._get_ffmpeg_info")
-def test_check_dependencies_ffmpeg_version_edge_cases(mock_get_ffmpeg):
-    """Test ffmpeg version edge cases in check_dependencies."""
-    # Version 6 is fine
-    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 6)
     errors = cli.check_dependencies()
     assert len(errors) == 0
 
-    # Version 8 is too new
-    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 8)
-    errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "version 4-7" in errors[0].lower() or "FFmpeg 8" in errors[0]
-
-    # Version 3 is too old
+@patch("voxscriber.cli._get_ffmpeg_info")
+def test_check_dependencies_ffmpeg_version_bad(mock_get_ffmpeg):
+    """Test check_dependencies is non-blocking even with bad ffmpeg."""
     mock_get_ffmpeg.return_value = ("/path/ffmpeg", 3)
     errors = cli.check_dependencies()
-    assert len(errors) == 1
-    assert "too old" in errors[0].lower() or "4+" in errors[0]
+    assert len(errors) == 0
+
+    mock_get_ffmpeg.return_value = ("/path/ffmpeg", 8)
+    errors = cli.check_dependencies()
+    assert len(errors) == 0
+
+@patch("voxscriber.cli._get_ffmpeg_info")
+def test_check_dependencies_ffmpeg_version_edge_cases(mock_get_ffmpeg):
+    """Test check_dependencies always returns empty (ffmpeg optional)."""
+    for version in [("/path/ffmpeg", 6), ("/path/ffmpeg", 8), ("/path/ffmpeg", 3)]:
+        mock_get_ffmpeg.return_value = version
+        assert cli.check_dependencies() == []
 
 # --- Tests for Main CLI ---
 
@@ -327,15 +308,14 @@ def test_doctor_all_good(mock_get_token, mock_check_tc, mock_get_ffmpeg):
 
 @patch("voxscriber.cli._get_ffmpeg_info")
 def test_doctor_ffmpeg_missing(mock_get_ffmpeg):
-    """Test doctor fails when ffmpeg missing."""
+    """Test doctor passes even when ffmpeg missing (optional)."""
     mock_get_ffmpeg.return_value = (None, None)
 
-    # Mock other checks to pass or be skipped
     with patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, "")), \
          patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src")), \
          patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
 
-        assert cli.doctor() == 1
+        assert cli.doctor() == 0  # ffmpeg is optional, not a blocker
 
 @patch("voxscriber.cli._get_ffmpeg_info")
 @patch("voxscriber.cli._check_torchcodec_native_lib")
@@ -477,19 +457,19 @@ def test_main_keyboard_interrupt(mock_pipeline_cls, mock_get_token, mock_check_d
 @patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src"))
 @patch("voxscriber.cli._validate_hf_token", return_value=(True, "user"))
 def test_doctor_ffmpeg_versions(mock_val, mock_src, mock_tc, mock_ffmpeg):
-    """Test doctor with various FFmpeg versions."""
+    """Test doctor with various FFmpeg versions (all pass, ffmpeg is optional)."""
 
-    # Version > 7 (Unsupported)
+    # Version > 7 (uses PyAV fallback)
     mock_ffmpeg.return_value = ("/bin/ffmpeg", 8)
-    assert cli.doctor() == 1
+    assert cli.doctor() == 0
 
-    # Version < 4 (Too old)
+    # Version < 4 (uses PyAV fallback)
     mock_ffmpeg.return_value = ("/bin/ffmpeg", 3)
-    assert cli.doctor() == 1
+    assert cli.doctor() == 0
 
     # Version Unknown
     mock_ffmpeg.return_value = ("/bin/ffmpeg", None)
-    assert cli.doctor() == 1
+    assert cli.doctor() == 0
 
 @patch("voxscriber.cli._get_ffmpeg_info", return_value=("/bin/ffmpeg", 6))
 @patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, ""))
