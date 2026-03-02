@@ -2,11 +2,16 @@
 
 ## Project Overview
 
-VoxScriber is a speaker diarization CLI tool for Apple Silicon Macs. It combines MLX Whisper (Apple Silicon optimized) with Pyannote Audio 3.1 to produce speaker-attributed transcripts from audio files.
+VoxScriber is a speaker diarization CLI tool that runs 100% locally. It supports two backends:
+- **MLX Whisper** on Apple Silicon Macs (fastest on M-series chips)
+- **faster-whisper** on Linux/CUDA/CPU (CTranslate2-based, works everywhere)
+
+Both backends are combined with Pyannote Audio 3.1 to produce speaker-attributed transcripts from audio files.
 
 **Key Features:**
 - 100% local processing (no cloud APIs)
-- Apple Silicon optimized via MLX
+- Cross-platform: macOS (Apple Silicon) and Linux (CUDA/CPU)
+- Auto-detects the best backend and device for your platform
 - Multiple output formats (md, txt, json, srt, vtt)
 - Parallel transcription + diarization for speed
 
@@ -73,11 +78,14 @@ Transcription and diarization run in parallel by default for speed.
 
 ## Key Dependencies
 
-- `mlx-whisper` - Apple Silicon optimized Whisper
+- `mlx-whisper` - Apple Silicon optimized Whisper (macOS only, optional)
+- `faster-whisper` - CTranslate2-based Whisper (Linux/CUDA/CPU, optional)
 - `pyannote.audio` - Speaker diarization (requires HF token + terms acceptance)
 - `pydub` + `soundfile` - Audio handling
 - `rich` - Console output
 - `pytest` + `pytest-mock` - Testing (dev dependency)
+
+One of `mlx-whisper` or `faster-whisper` is required. The backend is auto-detected based on platform.
 
 ## Environment Variables
 
@@ -103,6 +111,8 @@ Transcription and diarization run in parallel by default for speed.
 ## Important Notes
 
 - Pyannote requires users to accept terms at huggingface.co/pyannote/speaker-diarization-3.1
-- Only runs on Apple Silicon (MLX requirement)
+- On macOS: uses MLX backend (Apple Silicon only). Install with `pip install voxscriber[mlx]`
+- On Linux: uses faster-whisper backend (CUDA or CPU). Install with `pip install voxscriber[cuda]`
+- Device auto-detection: mps on macOS, cuda if available on Linux, else cpu
 - Version must be bumped for any PyPI release (can't overwrite)
-- ffmpeg@7 is "keg-only" on Homebrew - use `voxscriber-doctor` to configure DYLD_LIBRARY_PATH
+- ffmpeg@7 is "keg-only" on Homebrew (macOS) - use `voxscriber-doctor` to configure DYLD_LIBRARY_PATH

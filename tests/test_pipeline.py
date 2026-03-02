@@ -102,7 +102,7 @@ def test_pipeline_config_defaults():
     config = PipelineConfig()
     assert config.whisper_model == "large-v3-turbo"
     assert config.parallel is True
-    assert config.device == "mps"
+    assert config.device == "auto"
     assert config.language is None
     assert config.hf_token is None
     assert config.subtitle_mode == "speaker"
@@ -133,14 +133,15 @@ def test_pipeline_init_defaults(mock_components):
     # Verify components initialized with defaults
     mock_components["MockTranscriber"].assert_called_with(
         model="large-v3-turbo",
-        language=None
+        language=None,
+        device="auto"
     )
     mock_components["MockDiarizer"].assert_called_with(
         hf_token=None,  # Or os.environ.get("HF_TOKEN")
         num_speakers=None,
         min_speakers=None,
         max_speakers=None,
-        device="mps"
+        device="auto"
     )
 
 def test_pipeline_init_custom_config(mock_components):
@@ -156,7 +157,8 @@ def test_pipeline_init_custom_config(mock_components):
 
     mock_components["MockTranscriber"].assert_called_with(
         model="medium",
-        language="es"
+        language="es",
+        device="cpu"
     )
     mock_components["MockDiarizer"].assert_called_with(
         hf_token="secret",

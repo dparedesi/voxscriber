@@ -7,25 +7,39 @@
 
 <a href="https://buymeacoffee.com/dparedesi" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a>
 
-Professional speaker diarization running 100% locally on Apple Silicon. Combines [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) with [Pyannote 3.1](https://github.com/pyannote/pyannote-audio).
+Professional speaker diarization running 100% locally. Supports [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) on Apple Silicon and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on Linux/CUDA, combined with [Pyannote 3.1](https://github.com/pyannote/pyannote-audio).
 
 ![VoxScriber Banner](images/banner.png)
 
 ## Requirements
 
+**macOS (Apple Silicon):**
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10+
 - FFmpeg 7 (`brew install ffmpeg@7 && brew link ffmpeg@7`)
 - [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
 
+**Linux:**
+- Python 3.10+
+- FFmpeg 4-7 (`sudo apt install ffmpeg`)
+- [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
+- For GPU: CUDA 12 + cuDNN 9 (optional, CPU works too)
+
 ## Installation
 
 ```bash
-# From PyPI
-pip install voxscriber
+# macOS (Apple Silicon)
+pip install voxscriber[mlx]
+
+# Linux with CUDA
+pip install voxscriber[cuda]
+
+# Linux CPU-only
+pip install voxscriber[cuda]  # faster-whisper works on CPU too
 
 # Or with pipx (recommended for CLI tools)
-pipx install voxscriber
+pipx install "voxscriber[mlx]"   # macOS
+pipx install "voxscriber[cuda]"  # Linux
 ```
 
 ### Setup Hugging Face Token
@@ -110,7 +124,7 @@ voxscriber --help
   --model, -m       Whisper model (default: large-v3-turbo)
   --formats, -f     Output formats (default: md,txt)
   --output, -o      Output directory
-  --device          mps (default) or cpu
+  --device          auto (default), mps, cuda, or cpu
   --srt-mode        Subtitle segmentation mode for srt/vtt: speaker|sentence
   --srt-max-duration  Maximum subtitle duration in seconds for srt/vtt
   --quiet, -q       Suppress progress
@@ -119,7 +133,7 @@ voxscriber --help
 
 ## Performance
 
-~0.1-0.15x RTF on Apple Silicon. A 20-minute recording processes in ~2-3 minutes.
+~0.1-0.15x RTF on Apple Silicon (MLX). ~0.15-0.25x RTF on NVIDIA GPUs (faster-whisper). A 20-minute recording processes in ~2-4 minutes depending on hardware.
 
 ## Troubleshooting
 

@@ -86,7 +86,7 @@ class Diarizer:
         num_speakers: Optional[int] = None,
         min_speakers: Optional[int] = None,
         max_speakers: Optional[int] = None,
-        device: str = "mps",
+        device: str = "auto",
     ):
         """
         Initialize diarizer.
@@ -96,7 +96,8 @@ class Diarizer:
             num_speakers: Exact number of speakers (if known)
             min_speakers: Minimum number of speakers
             max_speakers: Maximum number of speakers
-            device: Device to use ("mps" for Apple Silicon, "cpu" for fallback)
+            device: Device to use ("auto", "mps", "cuda", "cpu").
+                    "auto" picks mps on macOS, cuda if available, else cpu.
         """
         self.hf_token = hf_token or os.environ.get("HF_TOKEN")
         self.num_speakers = num_speakers
@@ -133,7 +134,14 @@ class Diarizer:
         )
 
         # Move to appropriate device
-        if self.device == "mps" and torch.backends.mps.is_available():
+        if self.device == "auto":
+            import platform as _platform
+            if _platform.system() == "Darwin" and torch.backends.mps.is_available():
+                self._pipeline.to(torch.device("mps"))
+            elif torch.cuda.is_available():
+                self._pipeline.to(torch.device("cuda"))
+            # else: stays on CPU
+        elif self.device == "mps" and torch.backends.mps.is_available():
             self._pipeline.to(torch.device("mps"))
         elif self.device == "cuda" and torch.cuda.is_available():
             self._pipeline.to(torch.device("cuda"))

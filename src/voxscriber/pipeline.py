@@ -34,7 +34,7 @@ class PipelineConfig:
     num_speakers: Optional[int] = None
     min_speakers: Optional[int] = None
     max_speakers: Optional[int] = None
-    device: str = "mps"
+    device: str = "auto"
 
     # Alignment settings
     merge_same_speaker: bool = True
@@ -78,6 +78,7 @@ class DiarizationPipeline:
         self.transcriber = Transcriber(
             model=self.config.whisper_model,
             language=self.config.language,
+            device=self.config.device,
         )
 
         self.diarizer = Diarizer(
