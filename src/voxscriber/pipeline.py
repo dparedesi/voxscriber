@@ -22,11 +22,25 @@ from .preprocessor import AudioPreprocessor
 from .transcriber import Transcriber, TranscriptionResult
 
 
+def _default_whisper_model() -> str:
+    """Pick the best default model for the current platform."""
+    import platform
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        return "large-v3-turbo"  # MLX is fast
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "large-v3-turbo"  # CUDA is fast
+    except ImportError:
+        pass
+    return "small"  # CPU: best speed/quality tradeoff
+
+
 @dataclass
 class PipelineConfig:
     """Configuration for the diarization pipeline."""
     # Transcription settings
-    whisper_model: str = "large-v3-turbo"
+    whisper_model: str = ""
     language: Optional[str] = None
 
     # Diarization settings
@@ -49,6 +63,10 @@ class PipelineConfig:
     parallel: bool = True
     verbose: bool = True
     cache_dir: Optional[Path] = None
+
+    def __post_init__(self):
+        if not self.whisper_model:
+            self.whisper_model = _default_whisper_model()
 
 
 class DiarizationPipeline:

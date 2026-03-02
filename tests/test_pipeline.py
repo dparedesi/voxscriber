@@ -100,7 +100,7 @@ def mock_components():
 
 def test_pipeline_config_defaults():
     config = PipelineConfig()
-    assert config.whisper_model == "large-v3-turbo"
+    assert config.whisper_model in ("large-v3-turbo", "small")  # platform-dependent
     assert config.parallel is True
     assert config.device == "auto"
     assert config.language is None
@@ -131,11 +131,10 @@ def test_pipeline_init_defaults(mock_components):
     assert isinstance(pipeline.config, PipelineConfig)
 
     # Verify components initialized with defaults
-    mock_components["MockTranscriber"].assert_called_with(
-        model="large-v3-turbo",
-        language=None,
-        device="auto"
-    )
+    call_kwargs = mock_components["MockTranscriber"].call_args[1]
+    assert call_kwargs["model"] in ("large-v3-turbo", "small")
+    assert call_kwargs["language"] is None
+    assert call_kwargs["device"] == "auto"
     mock_components["MockDiarizer"].assert_called_with(
         hf_token=None,  # Or os.environ.get("HF_TOKEN")
         num_speakers=None,

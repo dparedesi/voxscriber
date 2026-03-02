@@ -238,10 +238,10 @@ Troubleshooting:
     parser.add_argument("--output", "-o", type=Path, help="Output directory")
     parser.add_argument("--formats", "-f", type=str, default="md",
                         help="Output formats: md,txt,json,srt,vtt (default: md)")
-    parser.add_argument("--model", "-m", type=str, default="large-v3-turbo",
+    parser.add_argument("--model", "-m", type=str, default=None,
                         choices=["tiny", "base", "small", "medium", "large",
                                  "large-v3-turbo", "large-4bit", "large-8bit"],
-                        help="Whisper model (default: large-v3-turbo)")
+                        help="Whisper model (default: large-v3-turbo on GPU/MLX, small on CPU)")
     parser.add_argument("--language", "-l", type=str, help="Force language (e.g., 'en', 'es')")
     parser.add_argument("--speakers", "-s", type=int, help="Number of speakers (if known)")
     parser.add_argument("--min-speakers", type=int, help="Minimum speakers")
@@ -361,7 +361,7 @@ Manual setup:
                 print("  (detected 1to1 in filename, setting speakers=2)")
 
         config = PipelineConfig(
-            whisper_model=args.model,
+            whisper_model=args.model or "",
             language=args.language,
             hf_token=hf_token,
             num_speakers=file_speakers,
