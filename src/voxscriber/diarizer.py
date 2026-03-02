@@ -112,8 +112,13 @@ class Diarizer:
             return
 
         try:
+            import warnings
+
             import torch
-            from pyannote.audio import Pipeline
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="torchcodec is not installed correctly")
+                from pyannote.audio import Pipeline
         except ImportError:
             raise ImportError(
                 "pyannote.audio not found. Install with: pip install pyannote.audio"
