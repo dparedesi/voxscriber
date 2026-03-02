@@ -255,8 +255,8 @@ Troubleshooting:
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--print", action="store_true", dest="print_result",
                         help="Print transcript to console")
-    parser.add_argument("--srt-mode", type=str, default="speaker", choices=["speaker", "sentence"],
-                        help="Subtitle segmentation mode for srt/vtt (default: speaker)")
+    parser.add_argument("--srt-mode", type=str, default="sentence", choices=["speaker", "sentence"],
+                        help="Subtitle segmentation mode for srt/vtt (default: sentence)")
     parser.add_argument("--srt-max-duration", type=float,
                         help="Maximum subtitle duration in seconds for srt/vtt (e.g., 15)")
     parser.add_argument(

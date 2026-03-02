@@ -105,7 +105,7 @@ def test_pipeline_config_defaults():
     assert config.device == "auto"
     assert config.language is None
     assert config.hf_token is None
-    assert config.subtitle_mode == "speaker"
+    assert config.subtitle_mode == "sentence"
     assert config.subtitle_max_duration is None
 
 def test_pipeline_config_custom():

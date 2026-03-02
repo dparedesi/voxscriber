@@ -56,7 +56,7 @@ class PipelineConfig:
 
     # Output settings
     speaker_names: Optional[Dict[str, str]] = None
-    subtitle_mode: str = "speaker"
+    subtitle_mode: str = "sentence"
     subtitle_max_duration: Optional[float] = None
 
     # Processing
