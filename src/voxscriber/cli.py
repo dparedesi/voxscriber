@@ -257,8 +257,8 @@ Troubleshooting:
                         help="Print transcript to console")
     parser.add_argument("--srt-mode", type=str, default="sentence", choices=["speaker", "sentence"],
                         help="Subtitle segmentation mode for srt/vtt (default: sentence)")
-    parser.add_argument("--srt-max-duration", type=float,
-                        help="Maximum subtitle duration in seconds for srt/vtt (e.g., 15)")
+    parser.add_argument("--srt-max-duration", type=float, default=15,
+                        help="Maximum subtitle duration in seconds for srt/vtt (default: 15)")
     parser.add_argument(
         "--version", "-V",
         action="version",
