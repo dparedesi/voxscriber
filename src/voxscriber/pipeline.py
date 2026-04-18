@@ -18,8 +18,13 @@ from typing import Dict, List, Optional
 from .aligner import AlignedTranscript, Aligner
 from .diarizer import DiarizationResult, Diarizer
 from .formatters import OutputFormatter, TranscriptPrinter
+from .memory import plan as plan_memory
 from .preprocessor import AudioPreprocessor
 from .transcriber import Transcriber, TranscriptionResult
+
+
+class InsufficientMemoryError(RuntimeError):
+    """Raised when the file is too large to process safely on this machine."""
 
 
 def _default_whisper_model() -> str:
@@ -157,10 +162,18 @@ class DiarizationPipeline:
         duration = self.preprocessor.get_duration(audio_path)
         self._log(f"Audio duration: {duration:.1f}s (preprocessed in {time.time() - preprocess_start:.1f}s)")
 
+        # Step 1b: Pick a processing mode that fits available memory.
+        mem_plan = plan_memory(duration, requested_parallel=self.config.parallel)
+        if mem_plan.mode == "skip":
+            raise InsufficientMemoryError(mem_plan.reason)
+        use_parallel = mem_plan.mode == "parallel"
+        if self.config.parallel and not use_parallel:
+            self._log(mem_plan.reason)
+
         # Step 2: Run transcription and diarization
         # Transcription uses preprocessed audio (16kHz mono for Whisper)
         # Diarization uses mono audio (original sample rate preserves speaker characteristics)
-        if self.config.parallel:
+        if use_parallel:
             transcription, diarization = self._process_parallel(whisper_audio, diarize_audio)
         else:
             transcription, diarization = self._process_sequential(whisper_audio, diarize_audio)
