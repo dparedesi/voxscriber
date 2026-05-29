@@ -111,9 +111,9 @@ class Diarizer:
         if self._pipeline is not None:
             return
 
-        try:
-            import warnings
+        import warnings
 
+        try:
             import torch
 
             with warnings.catch_warnings():
@@ -132,11 +132,13 @@ class Diarizer:
                 "3. Set HF_TOKEN environment variable or pass token to Diarizer"
             )
 
-        # Load pipeline
-        self._pipeline = Pipeline.from_pretrained(
-            self.MODEL_ID,
-            token=self.hf_token,
-        )
+        # Load pipeline (suppress torchcodec warnings on Linux without system FFmpeg)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="torchcodec is not installed correctly")
+            self._pipeline = Pipeline.from_pretrained(
+                self.MODEL_ID,
+                token=self.hf_token,
+            )
 
         # Move to appropriate device
         if self.device == "auto":
@@ -197,8 +199,12 @@ class Diarizer:
         if self.max_speakers is not None:
             options["max_speakers"] = self.max_speakers
 
-        # Run diarization
-        result = self._pipeline(audio_input, **options)
+        # Run diarization (suppress torchcodec and std() warnings from pyannote internals)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="torchcodec is not installed correctly")
+            warnings.filterwarnings("ignore", message="std\\(\\): degrees of freedom is <= 0")
+            result = self._pipeline(audio_input, **options)
 
         # Pyannote 4.x returns DiarizeOutput, extract the Annotation
         if hasattr(result, 'speaker_diarization'):
