@@ -267,6 +267,20 @@ class Diarizer:
 
         return result
 
+    def unload(self):
+        """Release the pipeline and return its memory to the OS."""
+        self._pipeline = None
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
     @staticmethod
     def check_mps_available() -> bool:
         """Check if MPS (Metal Performance Shaders) is available."""

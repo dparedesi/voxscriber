@@ -196,55 +196,6 @@ class AudioPreprocessor:
 
         return output_path
 
-    def process_for_diarization(self, audio_path: Path, force: bool = False) -> Path:
-        """
-        Process audio file for diarization (mono only, keeps original sample rate).
-
-        Args:
-            audio_path: Path to input audio file
-            force: Force reprocessing even if cached version exists
-
-        Returns:
-            Path to processed WAV file (mono, original sample rate)
-        """
-        audio_path = Path(audio_path)
-        if not audio_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-        # Check if already mono WAV
-        info = self._get_audio_info(audio_path)
-        for stream in info.get("streams", []):
-            if stream.get("codec_type") == "audio":
-                channels = int(stream.get("channels", 0))
-                codec = stream.get("codec_name", "")
-                if channels == 1 and codec in ["pcm_s16le", "pcm_f32le"]:
-                    return audio_path
-
-        # Generate cache filename for diarization version
-        cache_name = f"{audio_path.stem}_mono_diarize.wav"
-        output_path = self.cache_dir / cache_name
-
-        # Check if already processed
-        if output_path.exists() and not force:
-            return output_path
-
-        if self._use_ffmpeg:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", str(audio_path),
-                "-vn",
-                "-acodec", "pcm_s16le",
-                "-ac", "1",
-                str(output_path)
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise RuntimeError(f"Audio conversion for diarization failed: {result.stderr}")
-        else:
-            self._convert_with_pyav(audio_path, output_path, target_sr=None, mono=True)
-
-        return output_path
-
     def get_duration(self, audio_path: Path) -> float:
         """Get audio duration in seconds."""
         info = self._get_audio_info(audio_path)

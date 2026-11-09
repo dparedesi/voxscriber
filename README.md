@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-Professional speaker diarization running 100% locally. Supports [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) on Apple Silicon and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on Linux/CUDA, combined with [Pyannote 3.1](https://github.com/pyannote/pyannote-audio).
+Professional speaker diarization running 100% locally. Uses [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (via [parakeet-mlx](https://github.com/senstella/parakeet-mlx), 25 European languages) on Apple Silicon, with [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) as an option, and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on Linux/CUDA, combined with [Pyannote 3.1](https://github.com/pyannote/pyannote-audio).
 
 ![VoxScriber Banner](images/banner.png)
 
@@ -14,8 +14,9 @@ Professional speaker diarization running 100% locally. Supports [MLX Whisper](ht
 - Python 3.10+
 - [Hugging Face token](https://huggingface.co/settings/tokens) (free, one-time model download)
 - For GPU: CUDA 12 + cuDNN 9 (optional, CPU works too)
+- On macOS: FFmpeg (`brew install ffmpeg`), which the Parakeet and MLX Whisper backends use to read audio
 
-That's it. No FFmpeg, no system packages, no sudo required.
+On Linux, no FFmpeg or system packages are needed (PyAV is used as a fallback).
 
 ## Installation
 
@@ -23,8 +24,8 @@ That's it. No FFmpeg, no system packages, no sudo required.
 pip install voxscriber
 ```
 
-The right Whisper backend is installed automatically:
-- macOS Apple Silicon: MLX Whisper
+The right transcription backend is installed automatically:
+- macOS Apple Silicon: Parakeet v3 (default) and MLX Whisper
 - Linux/other: faster-whisper (CUDA or CPU)
 
 ### Setup Hugging Face Token
@@ -106,10 +107,11 @@ voxscriber --help
 
   --speakers, -s    Number of speakers (if known)
   --language, -l    Force language (e.g., 'en', 'es')
-  --model, -m       Whisper model (default: large-v3-turbo on GPU/MLX, small on CPU)
+  --model, -m       Model (default: parakeet-v3 on Apple Silicon, large-v3-turbo on CUDA, small on CPU)
   --formats, -f     Output formats (default: md,txt)
   --output, -o      Output directory
   --device          auto (default), mps, cuda, or cpu
+  --parallel        Run transcription and diarization at the same time (more memory)
   --srt-mode        Subtitle segmentation mode for srt/vtt: speaker|sentence
   --srt-max-duration  Maximum subtitle duration in seconds for srt/vtt
   --quiet, -q       Suppress progress
@@ -118,7 +120,9 @@ voxscriber --help
 
 ## Performance
 
-~0.1-0.15x RTF on Apple Silicon (MLX). ~0.15-0.25x RTF on NVIDIA GPUs (faster-whisper). A 20-minute recording processes in ~2-4 minutes depending on hardware.
+Transcription and diarization run one after the other, and each model is freed before the next loads, so peak memory is the larger stage rather than the sum of both. On an M3 Pro (18 GB), a 15-minute recording takes about 76 seconds (~0.08x RTF) with a ~5.4 GB peak, versus about 13 GB when both models run at once (`--parallel`). ~0.15-0.25x RTF on NVIDIA GPUs (faster-whisper).
+
+Parakeet v3 auto-detects the language, so `--language` only applies to Whisper models.
 
 ## Troubleshooting
 

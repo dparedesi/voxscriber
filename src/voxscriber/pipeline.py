@@ -3,7 +3,7 @@ VoxScriber Pipeline
 
 Orchestrates the complete speaker diarization workflow:
 1. Audio preprocessing
-2. Parallel transcription and diarization
+2. Transcription, then diarization (each model freed before the next loads)
 3. Alignment
 4. Output formatting
 """
@@ -18,15 +18,19 @@ from typing import Dict, List, Optional
 from .aligner import AlignedTranscript, Aligner
 from .diarizer import DiarizationResult, Diarizer
 from .formatters import OutputFormatter, TranscriptPrinter
+from .memory import plan as plan_memory
 from .preprocessor import AudioPreprocessor
-from .transcriber import Transcriber, TranscriptionResult
+from .transcriber import Transcriber, TranscriptionResult, is_apple_silicon
+
+
+class InsufficientMemoryError(RuntimeError):
+    """Raised when the file is too large to process safely on this machine."""
 
 
 def _default_whisper_model() -> str:
     """Pick the best default model for the current platform."""
-    import platform
-    if platform.system() == "Darwin" and platform.machine() == "arm64":
-        return "large-v3-turbo"  # MLX is fast
+    if is_apple_silicon():
+        return "parakeet-v3"
     try:
         import torch
         if torch.cuda.is_available():
@@ -59,8 +63,8 @@ class PipelineConfig:
     subtitle_mode: str = "sentence"
     subtitle_max_duration: Optional[float] = None
 
-    # Processing
-    parallel: bool = True
+    # Processing. Sequential keeps peak memory at the larger stage instead of the sum.
+    parallel: bool = False
     verbose: bool = True
     cache_dir: Optional[Path] = None
 
@@ -73,7 +77,7 @@ class DiarizationPipeline:
     """
     Complete speaker diarization pipeline.
 
-    Combines MLX Whisper transcription with Pyannote diarization
+    Combines Parakeet (or Whisper) transcription with Pyannote diarization
     for professional-grade speaker-attributed transcripts.
     """
 
@@ -147,23 +151,27 @@ class DiarizationPipeline:
 
         total_start = time.time()
 
-        # Step 1: Preprocess audio
-        # Whisper needs 16kHz mono WAV
-        # Diarization needs mono WAV (original sample rate is fine, mono is crucial)
+        # Step 1: Preprocess audio to 16kHz mono WAV for both stages.
+        # Pyannote resamples to 16kHz internally, so a higher-rate copy only costs memory.
         self._log(f"Preprocessing: {audio_path.name}")
         preprocess_start = time.time()
-        whisper_audio = self.preprocessor.process(audio_path)
-        diarize_audio = self.preprocessor.process_for_diarization(audio_path)
+        audio_16k = self.preprocessor.process(audio_path)
         duration = self.preprocessor.get_duration(audio_path)
         self._log(f"Audio duration: {duration:.1f}s (preprocessed in {time.time() - preprocess_start:.1f}s)")
 
+        # Step 1b: Pick a processing mode that fits available memory.
+        mem_plan = plan_memory(duration, requested_parallel=self.config.parallel)
+        if mem_plan.mode == "skip":
+            raise InsufficientMemoryError(mem_plan.reason)
+        use_parallel = mem_plan.mode == "parallel"
+        if self.config.parallel and not use_parallel:
+            self._log(mem_plan.reason)
+
         # Step 2: Run transcription and diarization
-        # Transcription uses preprocessed audio (16kHz mono for Whisper)
-        # Diarization uses mono audio (original sample rate preserves speaker characteristics)
-        if self.config.parallel:
-            transcription, diarization = self._process_parallel(whisper_audio, diarize_audio)
+        if use_parallel:
+            transcription, diarization = self._process_parallel(audio_16k)
         else:
-            transcription, diarization = self._process_sequential(whisper_audio, diarize_audio)
+            transcription, diarization = self._process_sequential(audio_16k)
 
         # Step 3: Align results
         self._log("Aligning transcription with speakers...")
@@ -195,15 +203,9 @@ class DiarizationPipeline:
 
     def _process_parallel(
         self,
-        whisper_audio_path: Path,
-        diarize_audio_path: Path,
+        audio_path: Path,
     ) -> tuple[TranscriptionResult, DiarizationResult]:
-        """Run transcription and diarization in parallel.
-
-        Args:
-            whisper_audio_path: Preprocessed audio (16kHz mono) for Whisper
-            diarize_audio_path: Original audio for diarization (preserves speaker characteristics)
-        """
+        """Run transcription and diarization in parallel (both models resident at once)."""
         self._log("Running transcription and diarization in parallel...")
 
         transcription = None
@@ -213,12 +215,8 @@ class DiarizationPipeline:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             # Submit both tasks with appropriate audio paths
-            future_transcribe = executor.submit(
-                self._timed_transcribe, whisper_audio_path
-            )
-            future_diarize = executor.submit(
-                self._timed_diarize, diarize_audio_path
-            )
+            future_transcribe = executor.submit(self._timed_transcribe, audio_path)
+            future_diarize = executor.submit(self._timed_diarize, audio_path)
 
             # Collect results
             for future in as_completed([future_transcribe, future_diarize]):
@@ -231,25 +229,27 @@ class DiarizationPipeline:
                     diarization_time = elapsed
 
         self._log(f"Transcription: {transcription_time:.1f}s | Diarization: {diarization_time:.1f}s")
+        self.transcriber.unload()
+        self.diarizer.unload()
         return transcription, diarization
 
     def _process_sequential(
         self,
-        whisper_audio_path: Path,
-        diarize_audio_path: Path,
+        audio_path: Path,
     ) -> tuple[TranscriptionResult, DiarizationResult]:
-        """Run transcription and diarization sequentially.
-
-        Args:
-            whisper_audio_path: Preprocessed audio (16kHz mono) for Whisper
-            diarize_audio_path: Original audio for diarization (preserves speaker characteristics)
-        """
+        """Run transcription, free its model, then run diarization and free that model."""
         self._log("Transcribing...")
-        transcription, t_time, _ = self._timed_transcribe(whisper_audio_path)
+        try:
+            transcription, t_time, _ = self._timed_transcribe(audio_path)
+        finally:
+            self.transcriber.unload()
         self._log(f"Transcription complete ({t_time:.1f}s)")
 
         self._log("Diarizing...")
-        diarization, d_time, _ = self._timed_diarize(diarize_audio_path)
+        try:
+            diarization, d_time, _ = self._timed_diarize(audio_path)
+        finally:
+            self.diarizer.unload()
         self._log(f"Diarization complete ({d_time:.1f}s)")
 
         return transcription, diarization

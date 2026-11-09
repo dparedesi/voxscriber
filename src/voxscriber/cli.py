@@ -208,7 +208,7 @@ def check_dependencies() -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="VoxScriber - Speaker diarization with MLX Whisper + Pyannote",
+        description="VoxScriber - Speaker diarization with Parakeet/Whisper + Pyannote",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
@@ -239,9 +239,10 @@ Troubleshooting:
     parser.add_argument("--formats", "-f", type=str, default="md",
                         help="Output formats: md,txt,json,srt,vtt (default: md)")
     parser.add_argument("--model", "-m", type=str, default=None,
-                        choices=["tiny", "base", "small", "medium", "large",
+                        choices=["parakeet-v3", "tiny", "base", "small", "medium", "large",
                                  "large-v3-turbo", "large-4bit", "large-8bit"],
-                        help="Whisper model (default: large-v3-turbo on GPU/MLX, small on CPU)")
+                        help="Transcription model (default: parakeet-v3 on Apple Silicon, "
+                             "large-v3-turbo on CUDA, small on CPU)")
     parser.add_argument("--language", "-l", type=str, help="Force language (e.g., 'en', 'es')")
     parser.add_argument("--speakers", "-s", type=int, help="Number of speakers (if known)")
     parser.add_argument("--min-speakers", type=int, help="Minimum speakers")
@@ -250,8 +251,12 @@ Troubleshooting:
                         choices=["auto", "mps", "cuda", "cpu"],
                         help="Device (default: auto - mps on macOS, cuda if available, else cpu)")
     parser.add_argument("--hf-token", type=str, help="Hugging Face token")
-    parser.add_argument("--sequential", action="store_true",
-                        help="Run sequentially instead of parallel")
+    run_mode = parser.add_mutually_exclusive_group()
+    run_mode.add_argument("--parallel", action="store_true",
+                          help="Run transcription and diarization at the same time "
+                               "(faster, but both models stay in memory together)")
+    run_mode.add_argument("--sequential", action="store_true",
+                          help="Run one stage after the other, freeing each model (default)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--print", action="store_true", dest="print_result",
                         help="Print transcript to console")
@@ -348,58 +353,29 @@ Manual setup:
     total_files = len(audio_files)
     failed_files = []
 
-    for idx, audio_file in enumerate(audio_files, 1):
-        # Determine number of speakers for this file
-        # If filename contains "1to1", it's a two-person conversation
-        file_speakers = args.speakers
-        if file_speakers is None and "1to1" in audio_file.stem.lower():
-            file_speakers = 2
-
-        if is_batch and not args.quiet:
-            print(f"\n[{idx}/{total_files}] Processing: {audio_file.name}")
-            if file_speakers == 2 and args.speakers is None:
-                print("  (detected 1to1 in filename, setting speakers=2)")
-
-        config = PipelineConfig(
-            whisper_model=args.model or "",
-            language=args.language,
-            hf_token=hf_token,
-            num_speakers=file_speakers,
-            min_speakers=args.min_speakers,
-            max_speakers=args.max_speakers,
-            device=args.device,
-            parallel=not args.sequential,
-            verbose=not args.quiet,
-            subtitle_mode=args.srt_mode,
-            subtitle_max_duration=args.srt_max_duration,
-        )
-
-        pipeline = DiarizationPipeline(config)
-
+    if is_batch:
+        # Run each file in its own subprocess so a SIGKILL (OOM) on one file
+        # does not take the whole batch down. Exit code 137 = SIGKILL.
+        for idx, audio_file in enumerate(audio_files, 1):
+            if not args.quiet:
+                print(f"\n[{idx}/{total_files}] Processing: {audio_file.name}")
+            rc, reason = _process_one_subprocess(audio_file, args, hf_token)
+            if rc != 0:
+                failed_files.append((audio_file, reason))
+                print(f"Error processing {audio_file.name}: {reason}", file=sys.stderr)
+    else:
+        audio_file = audio_files[0]
         try:
-            transcript = pipeline.process(
-                audio_path=audio_file,
-                output_dir=args.output,
-                output_formats=[f.strip() for f in args.formats.split(",")],
-            )
-
-            if args.print_result:
-                print("\n" + "=" * 60 + "\n")
-                pipeline.print_transcript(transcript)
-
+            _process_one_in_process(audio_file, args, hf_token)
         except KeyboardInterrupt:
             print("\nInterrupted", file=sys.stderr)
             sys.exit(130)
         except Exception as e:
-            if is_batch:
-                failed_files.append((audio_file, str(e)))
-                print(f"Error processing {audio_file.name}: {e}", file=sys.stderr)
-            else:
-                print(f"Error: {e}", file=sys.stderr)
-                if not args.quiet:
-                    import traceback
-                    traceback.print_exc()
-                sys.exit(1)
+            print(f"Error: {e}", file=sys.stderr)
+            if not args.quiet:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
 
     # Summary for batch processing
     if is_batch and not args.quiet:
@@ -408,6 +384,99 @@ Manual setup:
             print("Failed files:")
             for f, err in failed_files:
                 print(f"  - {f.name}: {err}")
+
+
+def _resolve_file_speakers(audio_file: Path, cli_speakers: Optional[int]) -> Optional[int]:
+    """Return the speaker count to use for a file: explicit flag wins, else infer from filename."""
+    if cli_speakers is not None:
+        return cli_speakers
+    if "1to1" in audio_file.stem.lower():
+        return 2
+    return None
+
+
+def _process_one_in_process(audio_file: Path, args, hf_token: str) -> None:
+    """Run a single file through the pipeline in the current process. Raises on failure."""
+    file_speakers = _resolve_file_speakers(audio_file, args.speakers)
+    if file_speakers == 2 and args.speakers is None and not args.quiet:
+        print("  (detected 1to1 in filename, setting speakers=2)")
+
+    config = PipelineConfig(
+        whisper_model=args.model or "",
+        language=args.language,
+        hf_token=hf_token,
+        num_speakers=file_speakers,
+        min_speakers=args.min_speakers,
+        max_speakers=args.max_speakers,
+        device=args.device,
+        parallel=args.parallel,
+        verbose=not args.quiet,
+        subtitle_mode=args.srt_mode,
+        subtitle_max_duration=args.srt_max_duration,
+    )
+    pipeline = DiarizationPipeline(config)
+    transcript = pipeline.process(
+        audio_path=audio_file,
+        output_dir=args.output,
+        output_formats=[f.strip() for f in args.formats.split(",")],
+    )
+    if args.print_result:
+        print("\n" + "=" * 60 + "\n")
+        pipeline.print_transcript(transcript)
+
+
+def _process_one_subprocess(audio_file: Path, args, hf_token: str) -> Tuple[int, str]:
+    """
+    Run a single file in a fresh subprocess so OS-level crashes (OOM/SIGKILL)
+    cannot take down the parent batch runner.
+
+    Returns (return_code, reason). reason is human-readable on failure,
+    empty string on success.
+    """
+    cmd = [sys.executable, "-m", "voxscriber", str(audio_file)]
+    if args.output:
+        cmd += ["--output", str(args.output)]
+    if args.formats:
+        cmd += ["--formats", args.formats]
+    if args.model:
+        cmd += ["--model", args.model]
+    if args.language:
+        cmd += ["--language", args.language]
+    file_speakers = _resolve_file_speakers(audio_file, args.speakers)
+    if file_speakers is not None:
+        cmd += ["--speakers", str(file_speakers)]
+    if args.min_speakers is not None:
+        cmd += ["--min-speakers", str(args.min_speakers)]
+    if args.max_speakers is not None:
+        cmd += ["--max-speakers", str(args.max_speakers)]
+    if args.device and args.device != "auto":
+        cmd += ["--device", args.device]
+    if args.parallel:
+        cmd.append("--parallel")
+    if args.quiet:
+        cmd.append("--quiet")
+    if args.srt_mode:
+        cmd += ["--srt-mode", args.srt_mode]
+    if args.srt_max_duration is not None:
+        cmd += ["--srt-max-duration", str(args.srt_max_duration)]
+
+    env = dict(os.environ)
+    env["HF_TOKEN"] = hf_token
+
+    try:
+        result = subprocess.run(cmd, env=env)
+    except KeyboardInterrupt:
+        print("\nInterrupted", file=sys.stderr)
+        sys.exit(130)
+
+    rc = result.returncode
+    if rc == 0:
+        return 0, ""
+    if rc == 137 or rc == -9:
+        return rc, "killed by the OS (likely out of memory); drop --parallel or split the file"
+    if rc < 0:
+        return rc, f"terminated by signal {-rc}"
+    return rc, f"exited with code {rc}"
 
 
 def _get_shell_config_file() -> Optional[Path]:
@@ -455,7 +524,10 @@ def doctor():
     print("Checking FFmpeg...", end=" ")
     ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
 
-    if not ffmpeg_path:
+    if not ffmpeg_path and IS_MACOS:
+        print("NOT FOUND (required on macOS: brew install ffmpeg)")
+        all_ok = False
+    elif not ffmpeg_path:
         print("NOT FOUND (optional, using PyAV fallback)")
     elif ffmpeg_version is None:
         print(f"FOUND at {ffmpeg_path} (unknown version)")

@@ -163,66 +163,6 @@ def test_process_conversion_failure(preprocessor, mock_audio_file):
         with pytest.raises(RuntimeError, match="Audio conversion failed"):
             preprocessor.process(mock_audio_file)
 
-def test_process_for_diarization_already_mono(preprocessor, mock_audio_file):
-    info_mono = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 1,
-            "codec_name": "pcm_s16le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_mono):
-        result = preprocessor.process_for_diarization(mock_audio_file)
-        assert result == mock_audio_file
-
-def test_process_for_diarization_needs_conversion(preprocessor, mock_audio_file):
-    info_stereo = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 2,
-            "codec_name": "pcm_s16le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_stereo):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-
-            output_path = preprocessor.process_for_diarization(mock_audio_file)
-
-            assert output_path.name == f"{mock_audio_file.stem}_mono_diarize.wav"
-
-            # Verify ffmpeg args for diarization conversion
-            args = mock_run.call_args[0][0]
-            assert "-ac" in args
-            assert "1" in args
-            # Should NOT set sample rate (keep original)
-            assert "-ar" not in args
-
-def test_process_for_diarization_file_not_found(preprocessor):
-    with pytest.raises(FileNotFoundError):
-        preprocessor.process_for_diarization(Path("nonexistent.wav"))
-
-def test_process_for_diarization_failure(preprocessor, mock_audio_file):
-    info_stereo = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 2,
-            "codec_name": "pcm_s16le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_stereo):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                returncode=1,
-                stderr="Diarization conversion failed"
-            )
-
-            with pytest.raises(RuntimeError, match="Audio conversion for diarization failed"):
-                preprocessor.process_for_diarization(mock_audio_file)
-
 def test_process_cached_validation_error_reprocesses(preprocessor, mock_audio_file):
     # Setup cached file
     cached_file = preprocessor.cache_dir / f"{mock_audio_file.stem}_16khz_mono.wav"
@@ -255,61 +195,6 @@ def test_process_cached_invalid_reprocesses(preprocessor, mock_audio_file):
             # Should have reprocessed because cache was invalid
             mock_run.assert_called_once()
             assert result == cached_file
-
-def test_process_for_diarization_cached(preprocessor, mock_audio_file):
-    # Setup cached file
-    cached_file = preprocessor.cache_dir / f"{mock_audio_file.stem}_mono_diarize.wav"
-    cached_file.touch()
-
-    # Mock _get_audio_info to simulate input file needs conversion (stereo)
-    # so we reach the cache check logic
-    info_stereo = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 2,
-            "codec_name": "pcm_s16le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_stereo):
-        with patch("subprocess.run") as mock_run:
-            result = preprocessor.process_for_diarization(mock_audio_file)
-            assert result == cached_file
-            mock_run.assert_not_called()
-
-def test_process_for_diarization_already_mono_f32le(preprocessor, mock_audio_file):
-    info_mono = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 1,
-            "codec_name": "pcm_f32le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_mono):
-        result = preprocessor.process_for_diarization(mock_audio_file)
-        assert result == mock_audio_file
-
-def test_process_for_diarization_force_reprocess(preprocessor, mock_audio_file):
-    # Setup cached file
-    cached_file = preprocessor.cache_dir / f"{mock_audio_file.stem}_mono_diarize.wav"
-    cached_file.touch()
-
-    info_stereo = {
-        "streams": [{
-            "codec_type": "audio",
-            "channels": 2,
-            "codec_name": "pcm_s16le"
-        }]
-    }
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info_stereo):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-
-            preprocessor.process_for_diarization(mock_audio_file, force=True)
-
-            mock_run.assert_called_once()
 
 def test_needs_conversion_no_audio_streams(preprocessor, mock_audio_file):
     info_no_audio = {
@@ -366,7 +251,6 @@ def test_get_audio_info_json_error(preprocessor, mock_audio_file):
 
 def test_process_input_already_valid_creates_copy(preprocessor, mock_audio_file):
     # Even if input is valid 16kHz mono, process() creates a cached copy
-    # This documents current behavior, contrasting with process_for_diarization which returns input
 
     # We mock run to success
     with patch("subprocess.run") as mock_run:
@@ -378,21 +262,6 @@ def test_process_input_already_valid_creates_copy(preprocessor, mock_audio_file)
         mock_run.assert_called_once()
         assert output_path != mock_audio_file
         assert output_path.parent == preprocessor.cache_dir
-
-def test_process_for_diarization_empty_streams(preprocessor, mock_audio_file):
-    # If streams list is empty, it should proceed to conversion
-    info = {"streams": []}
-
-    with patch.object(preprocessor, "_get_audio_info", return_value=info):
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0)
-
-            output_path = preprocessor.process_for_diarization(mock_audio_file)
-
-            # Should have converted
-            mock_run.assert_called_once()
-            assert output_path.name == f"{mock_audio_file.stem}_mono_diarize.wav"
-
 
 def test_cleanup_specific_file(preprocessor):
     f = preprocessor.cache_dir / "test.wav"

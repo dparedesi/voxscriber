@@ -2,18 +2,19 @@
 
 ## Project Overview
 
-VoxScriber is a speaker diarization CLI tool that runs 100% locally. It supports two backends:
-- **MLX Whisper** on Apple Silicon Macs (fastest on M-series chips)
+VoxScriber is a speaker diarization CLI tool that runs 100% locally. It supports three transcription backends:
+- **Parakeet TDT 0.6B v3** (parakeet-mlx) on Apple Silicon Macs, the default
+- **MLX Whisper** on Apple Silicon Macs, opt-in via `--model`
 - **faster-whisper** on Linux/CUDA/CPU (CTranslate2-based, works everywhere)
 
-Both backends are combined with Pyannote Audio 3.1 to produce speaker-attributed transcripts from audio files.
+All backends are combined with Pyannote Audio 3.1 to produce speaker-attributed transcripts from audio files.
 
 **Key Features:**
 - 100% local processing (no cloud APIs)
 - Cross-platform: macOS (Apple Silicon) and Linux (CUDA/CPU)
 - Auto-detects the best backend and device for your platform
 - Multiple output formats (md, txt, json, srt, vtt)
-- Parallel transcription + diarization for speed
+- Sequential by default: each model is freed before the next loads (`--parallel` to opt out)
 
 ## Repository Structure
 
@@ -21,7 +22,8 @@ Both backends are combined with Pyannote Audio 3.1 to produce speaker-attributed
 src/voxscriber/
 ├── cli.py          # CLI entry point, argument parsing, dependency checks, doctor command
 ├── pipeline.py     # Main orchestrator (DiarizationPipeline, PipelineConfig)
-├── transcriber.py  # Pluggable Whisper backend (MLX or faster-whisper)
+├── transcriber.py  # Pluggable backend (Parakeet, MLX Whisper or faster-whisper)
+├── memory.py       # Memory planner (parallel/sequential/skip)
 ├── diarizer.py     # Pyannote speaker diarization
 ├── aligner.py      # Word-speaker alignment + hallucination filter
 ├── preprocessor.py # Audio format conversion (ffmpeg CLI or PyAV fallback)
@@ -49,7 +51,7 @@ make lint           # ruff check + format check
 make format         # ruff format
 
 # Testing
-pytest              # Run full test suite (121 tests)
+pytest              # Run full test suite (135 tests)
 pytest -v           # Verbose output
 pytest tests/test_cli.py  # Run specific module tests
 
@@ -68,16 +70,17 @@ voxscriber audio.m4a --speakers 2
 
 ## Architecture
 
-1. **Preprocessor** converts input audio to 16kHz WAV (ffmpeg CLI if available, PyAV fallback)
-2. **Transcriber** (MLX Whisper on macOS, faster-whisper on Linux) produces word-level timestamps
+1. **Preprocessor** converts input audio to 16kHz mono WAV once, used by both stages (ffmpeg CLI if available, PyAV fallback). Pyannote resamples to 16kHz internally, so a higher-rate copy only costs memory.
+2. **Transcriber** (Parakeet v3 on macOS, faster-whisper on Linux) produces word-level timestamps. Parakeet sub-word tokens are merged into words (a leading space starts a new word).
 3. **Diarizer** (Pyannote, fed via soundfile waveforms) produces speaker segments
 4. **Aligner** maps words to speakers, filters hallucinations
 5. **Formatters** output to requested formats
 
-Transcription and diarization run in parallel by default for speed.
+Transcription and diarization run sequentially by default; each stage calls `unload()` (drops the model, clears MLX/MPS caches) before the next loads, so peak memory is the larger stage, not the sum. `--parallel` keeps both resident.
 
 ## Key Dependencies
 
+- `parakeet-mlx` - Parakeet TDT v3 on MLX, the default transcriber (auto-installed on macOS arm64)
 - `mlx-whisper` - Apple Silicon optimized Whisper (auto-installed on macOS arm64)
 - `faster-whisper` - CTranslate2-based Whisper (auto-installed on Linux/other)
 - `pyannote.audio` - Speaker diarization (requires HF token + terms acceptance)
@@ -114,9 +117,9 @@ Backend is auto-installed via platform markers in pyproject.toml. `pip install v
 
 - Pyannote requires users to accept terms at huggingface.co/pyannote/speaker-diarization-3.1
 - `pip install voxscriber` auto-installs the right backend via platform markers
-- Zero system dependencies: no ffmpeg, no sudo, no apt/brew required
-- FFmpeg CLI is used when available (faster), otherwise falls back to PyAV
+- macOS needs the ffmpeg CLI: parakeet-mlx and mlx-whisper shell out to it to read audio
+- Linux has zero system dependencies: FFmpeg CLI is used when available, otherwise PyAV
 - Diarization uses soundfile to load audio, bypassing torchcodec entirely
-- Default model is platform-aware: large-v3-turbo on GPU/MLX, small on CPU
+- Default model is platform-aware: parakeet-v3 on Apple Silicon, large-v3-turbo on CUDA, small on CPU
 - Device auto-detection: mps on macOS, cuda if available on Linux, else cpu
 - Version must be bumped for any PyPI release (can't overwrite)

@@ -243,7 +243,7 @@ def test_main_success(mock_pipeline_cls, mock_get_token, mock_check_deps):
     mock_pipeline_cls.assert_called_once()
     config = mock_pipeline_cls.call_args[0][0]
     assert config.hf_token == "valid_token"
-    assert config.parallel is True # Default
+    assert config.parallel is False  # Default: sequential
 
     # Verify processing
     mock_pipeline = mock_pipeline_cls.return_value
@@ -306,16 +306,31 @@ def test_doctor_all_good(mock_get_token, mock_check_tc, mock_get_ffmpeg):
     with patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
         assert cli.doctor() == 0
 
+@patch("voxscriber.cli.IS_MACOS", False)
 @patch("voxscriber.cli._get_ffmpeg_info")
-def test_doctor_ffmpeg_missing(mock_get_ffmpeg):
-    """Test doctor passes even when ffmpeg missing (optional)."""
+def test_doctor_ffmpeg_missing_linux(mock_get_ffmpeg):
+    """On Linux ffmpeg is optional (PyAV fallback)."""
     mock_get_ffmpeg.return_value = (None, None)
 
     with patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, "")), \
          patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src")), \
          patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
 
-        assert cli.doctor() == 0  # ffmpeg is optional, not a blocker
+        assert cli.doctor() == 0
+
+
+@patch("voxscriber.cli.IS_MACOS", True)
+@patch("voxscriber.cli._get_ffmpeg_info")
+def test_doctor_ffmpeg_missing_macos(mock_get_ffmpeg, capsys):
+    """On macOS the Parakeet/MLX backends shell out to ffmpeg, so it is required."""
+    mock_get_ffmpeg.return_value = (None, None)
+
+    with patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, "")), \
+         patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src")), \
+         patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
+
+        assert cli.doctor() == 1
+    assert "brew install ffmpeg" in capsys.readouterr().out
 
 @patch("voxscriber.cli._get_ffmpeg_info")
 @patch("voxscriber.cli._check_torchcodec_native_lib")
@@ -409,7 +424,7 @@ def test_main_arguments_mapping(mock_pipeline_cls, mock_get_token, mock_check_de
     assert config.min_speakers == 2
     assert config.max_speakers == 4
     assert config.device == "cpu"
-    assert config.parallel is False  # --sequential implies parallel=False
+    assert config.parallel is False  # --sequential (also the default)
     assert config.verbose is False   # --quiet implies verbose=False
     assert config.subtitle_mode == "sentence"
     assert config.subtitle_max_duration == 15.0
@@ -572,66 +587,59 @@ def test_find_audio_files_all_extensions(tmp_path):
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
 @patch("voxscriber.cli._get_hf_token", return_value="token")
-@patch("voxscriber.cli.DiarizationPipeline")
-def test_main_batch_processing(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
-    """Test batch processing of a folder."""
-    # Create test audio files
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_processing(mock_run, mock_get_token, mock_check_deps, tmp_path):
+    """Test batch processing of a folder dispatches one subprocess per file."""
     (tmp_path / "call1.m4a").touch()
     (tmp_path / "call2.mp3").touch()
 
-    mock_pipeline = mock_pipeline_cls.return_value
-    mock_pipeline.process.return_value = "transcript"
+    mock_run.return_value = MagicMock(returncode=0)
 
     with patch("sys.argv", ["voxscriber", str(tmp_path)]):
         cli.main()
 
-    # Pipeline should be created and called twice
-    assert mock_pipeline.process.call_count == 2
+    assert mock_run.call_count == 2
 
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
 @patch("voxscriber.cli._get_hf_token", return_value="token")
-@patch("voxscriber.cli.DiarizationPipeline")
-def test_main_batch_1to1_detection(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
-    """Test 1to1 detection sets speakers=2."""
-    # Create file with 1to1 in the name
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_1to1_detection(mock_run, mock_get_token, mock_check_deps, tmp_path):
+    """Test 1to1 detection sets --speakers 2 in the subprocess command."""
     (tmp_path / "meeting_1to1_john.m4a").touch()
     (tmp_path / "group_call.m4a").touch()
 
-    mock_pipeline = mock_pipeline_cls.return_value
-    mock_pipeline.process.return_value = "transcript"
+    mock_run.return_value = MagicMock(returncode=0)
 
     with patch("sys.argv", ["voxscriber", str(tmp_path)]):
         cli.main()
 
-    # Check configs passed to pipeline
-    calls = mock_pipeline_cls.call_args_list
-    assert len(calls) == 2
+    # group_call has no --speakers flag; meeting_1to1_john has --speakers 2
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    cmd_by_file = {Path(cmd[3]).name: cmd for cmd in commands}
 
-    # First file (group_call) - no speakers specified
-    config1 = calls[0][0][0]
-    assert config1.num_speakers is None
+    group_cmd = cmd_by_file["group_call.m4a"]
+    assert "--speakers" not in group_cmd
 
-    # Second file (1to1) - speakers=2
-    config2 = calls[1][0][0]
-    assert config2.num_speakers == 2
+    oneone_cmd = cmd_by_file["meeting_1to1_john.m4a"]
+    assert "--speakers" in oneone_cmd
+    assert oneone_cmd[oneone_cmd.index("--speakers") + 1] == "2"
 
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
 @patch("voxscriber.cli._get_hf_token", return_value="token")
-@patch("voxscriber.cli.DiarizationPipeline")
-def test_main_batch_explicit_speakers_overrides(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path):
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_explicit_speakers_overrides(mock_run, mock_get_token, mock_check_deps, tmp_path):
     """Test explicit --speakers flag overrides 1to1 detection."""
     (tmp_path / "meeting_1to1.m4a").touch()
-
-    mock_pipeline = mock_pipeline_cls.return_value
-    mock_pipeline.process.return_value = "transcript"
+    mock_run.return_value = MagicMock(returncode=0)
 
     with patch("sys.argv", ["voxscriber", str(tmp_path), "--speakers", "5"]):
         cli.main()
 
-    config = mock_pipeline_cls.call_args[0][0]
-    assert config.num_speakers == 5  # Explicit flag wins
+    cmd = mock_run.call_args.args[0]
+    assert "--speakers" in cmd
+    assert cmd[cmd.index("--speakers") + 1] == "5"
 
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
@@ -645,30 +653,89 @@ def test_main_batch_empty_folder(mock_check_deps, tmp_path):
 
 @patch("voxscriber.cli.check_dependencies", return_value=[])
 @patch("voxscriber.cli._get_hf_token", return_value="token")
-@patch("voxscriber.cli.DiarizationPipeline")
-def test_main_batch_partial_failure(mock_pipeline_cls, mock_get_token, mock_check_deps, tmp_path, capsys):
-    """Test batch continues after individual file failures."""
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_partial_failure(mock_run, mock_get_token, mock_check_deps, tmp_path, capsys):
+    """Test batch continues after individual file failures and reports per-file reasons."""
     (tmp_path / "good.m4a").touch()
     (tmp_path / "bad.m4a").touch()
     (tmp_path / "also_good.m4a").touch()
 
-    mock_pipeline = mock_pipeline_cls.return_value
-
-    # First and third succeed, second fails
-    mock_pipeline.process.side_effect = [
-        "transcript1",
-        Exception("Processing failed"),
-        "transcript3",
+    # Ordered alphabetically by _find_audio_files: also_good, bad, good
+    mock_run.side_effect = [
+        MagicMock(returncode=0),     # also_good
+        MagicMock(returncode=1),     # bad: generic failure
+        MagicMock(returncode=0),     # good
     ]
 
     with patch("sys.argv", ["voxscriber", str(tmp_path)]):
         cli.main()
 
-    # Should have tried all 3 files
-    assert mock_pipeline.process.call_count == 3
+    assert mock_run.call_count == 3
 
     captured = capsys.readouterr()
     assert "Error processing bad.m4a" in captured.err
     assert "2/3 files processed" in captured.out
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_oom_does_not_abort(mock_run, mock_get_token, mock_check_deps, tmp_path, capsys):
+    """Exit code 137 (SIGKILL from OOM) on one file must not stop the batch."""
+    (tmp_path / "a.m4a").touch()
+    (tmp_path / "b.m4a").touch()
+    (tmp_path / "c.m4a").touch()
+
+    mock_run.side_effect = [
+        MagicMock(returncode=0),     # a.m4a OK
+        MagicMock(returncode=137),   # b.m4a killed by OOM
+        MagicMock(returncode=0),     # c.m4a OK (parent survived)
+    ]
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+
+    assert mock_run.call_count == 3
+    captured = capsys.readouterr()
+    assert "killed by the OS" in captured.err
+    assert "2/3 files processed" in captured.out
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_parallel_flag(mock_pipeline_cls, mock_get_token, mock_check_deps):
+    with patch("pathlib.Path.exists", return_value=True):
+        with patch("sys.argv", ["voxscriber", "test.m4a", "--parallel", "--model", "parakeet-v3"]):
+            cli.main()
+
+    config = mock_pipeline_cls.call_args[0][0]
+    assert config.parallel is True
+    assert config.whisper_model == "parakeet-v3"
+
+
+def test_parallel_and_sequential_are_mutually_exclusive():
+    with patch("sys.argv", ["voxscriber", "test.m4a", "--parallel", "--sequential"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_forwards_parallel_only_when_requested(
+    mock_run, mock_get_token, mock_check_deps, tmp_path
+):
+    (tmp_path / "call.m4a").touch()
+    mock_run.return_value = MagicMock(returncode=0)
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+    assert "--parallel" not in mock_run.call_args.args[0]
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path), "--parallel"]):
+        cli.main()
+    assert "--parallel" in mock_run.call_args.args[0]
 
 
