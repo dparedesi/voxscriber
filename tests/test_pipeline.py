@@ -71,7 +71,6 @@ def mock_components():
         # Setup Preprocessor
         preprocessor = MockPreprocessor.return_value
         preprocessor.process.return_value = Path("processed_whisper.wav")
-        preprocessor.process_for_diarization.return_value = Path("processed_diarize.wav")
         preprocessor.get_duration.return_value = 10.0
 
         # Setup Transcriber
@@ -100,8 +99,8 @@ def mock_components():
 
 def test_pipeline_config_defaults():
     config = PipelineConfig()
-    assert config.whisper_model in ("large-v3-turbo", "small")  # platform-dependent
-    assert config.parallel is True
+    assert config.whisper_model in ("parakeet-v3", "large-v3-turbo", "small")  # platform-dependent
+    assert config.parallel is False
     assert config.device == "auto"
     assert config.language is None
     assert config.hf_token is None
@@ -132,7 +131,7 @@ def test_pipeline_init_defaults(mock_components):
 
     # Verify components initialized with defaults
     call_kwargs = mock_components["MockTranscriber"].call_args[1]
-    assert call_kwargs["model"] in ("large-v3-turbo", "small")
+    assert call_kwargs["model"] in ("parakeet-v3", "large-v3-turbo", "small")
     assert call_kwargs["language"] is None
     assert call_kwargs["device"] == "auto"
     mock_components["MockDiarizer"].assert_called_with(
@@ -180,7 +179,7 @@ def test_create_simple_factory(mock_components):
     assert pipeline.config.hf_token == "token123"
     assert pipeline.config.num_speakers == 4
     assert pipeline.config.language == "fr"
-    assert pipeline.config.parallel is True  # default
+    assert pipeline.config.parallel is False  # default
 
 # --- Tests for Processing ---
 
@@ -202,19 +201,19 @@ def test_process_parallel_flow(mock_components, mock_transcription_result, mock_
 
     # Verify preprocessing calls
     mock_components["preprocessor"].process.assert_called_once_with(input_path)
-    mock_components["preprocessor"].process_for_diarization.assert_called_once_with(input_path)
     mock_components["preprocessor"].get_duration.assert_called_once_with(input_path)
 
-    # Verify parallel execution paths (passed the preprocessed paths)
-    whisper_path = mock_components["preprocessor"].process.return_value
-    diarize_path = mock_components["preprocessor"].process_for_diarization.return_value
+    # Both stages get the same 16kHz preprocessed file
+    audio_16k = mock_components["preprocessor"].process.return_value
 
     mock_components["transcriber"].transcribe.assert_called_once_with(
-        whisper_path, word_timestamps=True, verbose=False
+        audio_16k, word_timestamps=True, verbose=False
     )
     mock_components["diarizer"].diarize.assert_called_once_with(
-        diarize_path, verbose=False
+        audio_16k, verbose=False
     )
+    mock_components["transcriber"].unload.assert_called_once()
+    mock_components["diarizer"].unload.assert_called_once()
 
     # Verify alignment
     mock_components["aligner"].align.assert_called_once_with(
@@ -238,17 +237,43 @@ def test_process_sequential_flow(mock_components, mock_transcription_result, moc
     input_path = Path("test.m4a")
     pipeline.process(input_path, output_formats=[])
 
-    whisper_path = mock_components["preprocessor"].process.return_value
-    diarize_path = mock_components["preprocessor"].process_for_diarization.return_value
+    audio_16k = mock_components["preprocessor"].process.return_value
 
-    # Check calls occurred (order is harder to verify strictly without side effects,
-    # but sequential implementation calls them one by one)
     mock_components["transcriber"].transcribe.assert_called_once_with(
-        whisper_path, word_timestamps=True, verbose=False
+        audio_16k, word_timestamps=True, verbose=False
     )
     mock_components["diarizer"].diarize.assert_called_once_with(
-        diarize_path, verbose=False
+        audio_16k, verbose=False
     )
+
+
+def test_sequential_frees_transcriber_before_diarizing(
+    mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript
+):
+    order = []
+    mock_components["transcriber"].transcribe.side_effect = (
+        lambda *a, **k: order.append("transcribe") or mock_transcription_result
+    )
+    mock_components["transcriber"].unload.side_effect = lambda: order.append("unload_transcriber")
+    mock_components["diarizer"].diarize.side_effect = (
+        lambda *a, **k: order.append("diarize") or mock_diarization_result
+    )
+    mock_components["diarizer"].unload.side_effect = lambda: order.append("unload_diarizer")
+    mock_components["aligner"].align.return_value = mock_aligned_transcript
+
+    DiarizationPipeline(PipelineConfig(verbose=False)).process(Path("test.m4a"), output_formats=[])
+
+    assert order == ["transcribe", "unload_transcriber", "diarize", "unload_diarizer"]
+
+
+def test_sequential_unloads_transcriber_even_on_failure(mock_components):
+    mock_components["transcriber"].transcribe.side_effect = RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        DiarizationPipeline(PipelineConfig(verbose=False)).process(Path("test.wav"))
+
+    mock_components["transcriber"].unload.assert_called_once()
+    mock_components["diarizer"].diarize.assert_not_called()
 
 def test_process_outputs(mock_components, mock_transcription_result, mock_diarization_result, mock_aligned_transcript):
     """Test multiple output formats."""

@@ -243,7 +243,7 @@ def test_main_success(mock_pipeline_cls, mock_get_token, mock_check_deps):
     mock_pipeline_cls.assert_called_once()
     config = mock_pipeline_cls.call_args[0][0]
     assert config.hf_token == "valid_token"
-    assert config.parallel is True # Default
+    assert config.parallel is False  # Default: sequential
 
     # Verify processing
     mock_pipeline = mock_pipeline_cls.return_value
@@ -306,16 +306,31 @@ def test_doctor_all_good(mock_get_token, mock_check_tc, mock_get_ffmpeg):
     with patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
         assert cli.doctor() == 0
 
+@patch("voxscriber.cli.IS_MACOS", False)
 @patch("voxscriber.cli._get_ffmpeg_info")
-def test_doctor_ffmpeg_missing(mock_get_ffmpeg):
-    """Test doctor passes even when ffmpeg missing (optional)."""
+def test_doctor_ffmpeg_missing_linux(mock_get_ffmpeg):
+    """On Linux ffmpeg is optional (PyAV fallback)."""
     mock_get_ffmpeg.return_value = (None, None)
 
     with patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, "")), \
          patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src")), \
          patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
 
-        assert cli.doctor() == 0  # ffmpeg is optional, not a blocker
+        assert cli.doctor() == 0
+
+
+@patch("voxscriber.cli.IS_MACOS", True)
+@patch("voxscriber.cli._get_ffmpeg_info")
+def test_doctor_ffmpeg_missing_macos(mock_get_ffmpeg, capsys):
+    """On macOS the Parakeet/MLX backends shell out to ffmpeg, so it is required."""
+    mock_get_ffmpeg.return_value = (None, None)
+
+    with patch("voxscriber.cli._check_torchcodec_native_lib", return_value=(True, "")), \
+         patch("voxscriber.cli._get_hf_token_source", return_value=("token", "src")), \
+         patch("voxscriber.cli._validate_hf_token", return_value=(True, "user")):
+
+        assert cli.doctor() == 1
+    assert "brew install ffmpeg" in capsys.readouterr().out
 
 @patch("voxscriber.cli._get_ffmpeg_info")
 @patch("voxscriber.cli._check_torchcodec_native_lib")
@@ -409,7 +424,7 @@ def test_main_arguments_mapping(mock_pipeline_cls, mock_get_token, mock_check_de
     assert config.min_speakers == 2
     assert config.max_speakers == 4
     assert config.device == "cpu"
-    assert config.parallel is False  # --sequential implies parallel=False
+    assert config.parallel is False  # --sequential (also the default)
     assert config.verbose is False   # --quiet implies verbose=False
     assert config.subtitle_mode == "sentence"
     assert config.subtitle_max_duration == 15.0
@@ -684,5 +699,43 @@ def test_main_batch_oom_does_not_abort(mock_run, mock_get_token, mock_check_deps
     captured = capsys.readouterr()
     assert "killed by the OS" in captured.err
     assert "2/3 files processed" in captured.out
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.DiarizationPipeline")
+def test_main_parallel_flag(mock_pipeline_cls, mock_get_token, mock_check_deps):
+    with patch("pathlib.Path.exists", return_value=True):
+        with patch("sys.argv", ["voxscriber", "test.m4a", "--parallel", "--model", "parakeet-v3"]):
+            cli.main()
+
+    config = mock_pipeline_cls.call_args[0][0]
+    assert config.parallel is True
+    assert config.whisper_model == "parakeet-v3"
+
+
+def test_parallel_and_sequential_are_mutually_exclusive():
+    with patch("sys.argv", ["voxscriber", "test.m4a", "--parallel", "--sequential"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+
+
+@patch("voxscriber.cli.check_dependencies", return_value=[])
+@patch("voxscriber.cli._get_hf_token", return_value="token")
+@patch("voxscriber.cli.subprocess.run")
+def test_main_batch_forwards_parallel_only_when_requested(
+    mock_run, mock_get_token, mock_check_deps, tmp_path
+):
+    (tmp_path / "call.m4a").touch()
+    mock_run.return_value = MagicMock(returncode=0)
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path)]):
+        cli.main()
+    assert "--parallel" not in mock_run.call_args.args[0]
+
+    with patch("sys.argv", ["voxscriber", str(tmp_path), "--parallel"]):
+        cli.main()
+    assert "--parallel" in mock_run.call_args.args[0]
 
 

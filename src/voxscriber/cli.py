@@ -208,7 +208,7 @@ def check_dependencies() -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="VoxScriber - Speaker diarization with MLX Whisper + Pyannote",
+        description="VoxScriber - Speaker diarization with Parakeet/Whisper + Pyannote",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
@@ -239,9 +239,10 @@ Troubleshooting:
     parser.add_argument("--formats", "-f", type=str, default="md",
                         help="Output formats: md,txt,json,srt,vtt (default: md)")
     parser.add_argument("--model", "-m", type=str, default=None,
-                        choices=["tiny", "base", "small", "medium", "large",
+                        choices=["parakeet-v3", "tiny", "base", "small", "medium", "large",
                                  "large-v3-turbo", "large-4bit", "large-8bit"],
-                        help="Whisper model (default: large-v3-turbo on GPU/MLX, small on CPU)")
+                        help="Transcription model (default: parakeet-v3 on Apple Silicon, "
+                             "large-v3-turbo on CUDA, small on CPU)")
     parser.add_argument("--language", "-l", type=str, help="Force language (e.g., 'en', 'es')")
     parser.add_argument("--speakers", "-s", type=int, help="Number of speakers (if known)")
     parser.add_argument("--min-speakers", type=int, help="Minimum speakers")
@@ -250,8 +251,12 @@ Troubleshooting:
                         choices=["auto", "mps", "cuda", "cpu"],
                         help="Device (default: auto - mps on macOS, cuda if available, else cpu)")
     parser.add_argument("--hf-token", type=str, help="Hugging Face token")
-    parser.add_argument("--sequential", action="store_true",
-                        help="Run sequentially instead of parallel")
+    run_mode = parser.add_mutually_exclusive_group()
+    run_mode.add_argument("--parallel", action="store_true",
+                          help="Run transcription and diarization at the same time "
+                               "(faster, but both models stay in memory together)")
+    run_mode.add_argument("--sequential", action="store_true",
+                          help="Run one stage after the other, freeing each model (default)")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress progress output")
     parser.add_argument("--print", action="store_true", dest="print_result",
                         help="Print transcript to console")
@@ -404,7 +409,7 @@ def _process_one_in_process(audio_file: Path, args, hf_token: str) -> None:
         min_speakers=args.min_speakers,
         max_speakers=args.max_speakers,
         device=args.device,
-        parallel=not args.sequential,
+        parallel=args.parallel,
         verbose=not args.quiet,
         subtitle_mode=args.srt_mode,
         subtitle_max_duration=args.srt_max_duration,
@@ -446,8 +451,8 @@ def _process_one_subprocess(audio_file: Path, args, hf_token: str) -> Tuple[int,
         cmd += ["--max-speakers", str(args.max_speakers)]
     if args.device and args.device != "auto":
         cmd += ["--device", args.device]
-    if args.sequential:
-        cmd.append("--sequential")
+    if args.parallel:
+        cmd.append("--parallel")
     if args.quiet:
         cmd.append("--quiet")
     if args.srt_mode:
@@ -468,7 +473,7 @@ def _process_one_subprocess(audio_file: Path, args, hf_token: str) -> Tuple[int,
     if rc == 0:
         return 0, ""
     if rc == 137 or rc == -9:
-        return rc, "killed by the OS (likely out of memory); try --sequential or split the file"
+        return rc, "killed by the OS (likely out of memory); drop --parallel or split the file"
     if rc < 0:
         return rc, f"terminated by signal {-rc}"
     return rc, f"exited with code {rc}"
@@ -519,7 +524,10 @@ def doctor():
     print("Checking FFmpeg...", end=" ")
     ffmpeg_path, ffmpeg_version = _get_ffmpeg_info()
 
-    if not ffmpeg_path:
+    if not ffmpeg_path and IS_MACOS:
+        print("NOT FOUND (required on macOS: brew install ffmpeg)")
+        all_ok = False
+    elif not ffmpeg_path:
         print("NOT FOUND (optional, using PyAV fallback)")
     elif ffmpeg_version is None:
         print(f"FOUND at {ffmpeg_path} (unknown version)")
